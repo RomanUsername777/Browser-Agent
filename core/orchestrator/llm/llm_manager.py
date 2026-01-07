@@ -2,17 +2,18 @@
 
 import asyncio
 import re
+import time
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 
 from core.ai_models.messages import BaseMessage, UserMessage, AssistantMessage, ContentPartTextParam
 from core.exceptions import ModelProviderError, ModelRateLimitError
-from core.orchestrator.models import AgentOutput
+from core.orchestrator.models import StepDecision
 from core.observability import observe
 
 if TYPE_CHECKING:
-	from core.orchestrator.manager import Agent
+	from core.orchestrator.manager import TaskOrchestrator
 
 # URL pattern for matching URLs in text
 URL_PATTERN = re.compile(r'https?://[^\s<>"\']+|www\.[^\s<>"\']+|[^\s<>"\']+\.[a-z]{2,}(?:/[^\s<>"\']*)?', re.IGNORECASE)
@@ -21,28 +22,28 @@ URL_PATTERN = re.compile(r'https?://[^\s<>"\']+|www\.[^\s<>"\']+|[^\s<>"\']+\.[a
 class LLMManager:
 	"""Менеджер для управления взаимодействием с LLM."""
 
-	def __init__(self, agent: 'Agent'):
-		self.agent = agent
+	def __init__(self, agent: 'TaskOrchestrator'):
+		self.orchestrator = agent
 
 	async def prepare_llm_messages(self) -> list[BaseMessage]:
 		"""Подготавливает сообщения для отправки в LLM"""
-		context_messages = self.agent._message_manager.get_messages()
-		self.agent.logger.debug(
-			f'🤖 Шаг {self.agent.state.n_steps}: Вызов LLM с {len(context_messages)} сообщениями (модель: {self.agent.llm.model})...'
+		context_messages = self.orchestrator._message_manager.get_messages()
+		self.orchestrator.logger.debug(
+			f'🤖 Шаг {self.orchestrator.state.n_steps}: Вызов LLM с {len(context_messages)} сообщениями (модель: {self.orchestrator.llm.model})...'
 		)
 		return context_messages
 
-	async def call_llm_with_timeout(self, context_messages: list[BaseMessage]) -> AgentOutput:
+	async def call_llm_with_timeout(self, context_messages: list[BaseMessage]) -> StepDecision:
 		"""Вызывает LLM с обработкой таймаутов"""
 		try:
 			llm_response = await asyncio.wait_for(
-				self.get_model_output_with_retry(context_messages), timeout=self.agent.settings.llm_timeout
+				self.get_model_output_with_retry(context_messages), timeout=self.orchestrator.settings.llm_timeout
 			)
 			return llm_response
 		except TimeoutError:
 			await self.log_llm_timeout(context_messages)
 			raise TimeoutError(
-				f'Вызов LLM превысил таймаут {self.agent.settings.llm_timeout} секунд. Сократите размышления и вывод.'
+				f'Вызов LLM превысил таймаут {self.orchestrator.settings.llm_timeout} секунд. Сократите размышления и вывод.'
 			)
 
 	async def log_llm_timeout(self, context_messages: list[BaseMessage]) -> None:
@@ -59,31 +60,34 @@ class LLMManager:
 		from core.session.models import BrowserStateSummary
 		
 		# Получение сообщений контекста для LLM
+		t1 = time.time()
 		context_messages = await self.prepare_llm_messages()
 		
 		# Вызов LLM с обработкой таймаутов
+		t2 = time.time()
 		llm_response = await self.call_llm_with_timeout(context_messages)
 
 		# Сохранение ответа LLM в состоянии
 		self.store_llm_response(llm_response)
 
 		# Обработка колбэков и сохранение разговора
-		await self.agent._history_manager.handle_post_llm_processing(page_state, context_messages)
+		t3 = time.time()
+		await self.orchestrator._history_manager.handle_post_llm_processing(page_state, context_messages)
 
 		# Проверки на остановку
-		await self.agent._verify_agent_continuation()
+		await self.orchestrator._verify_agent_continuation()
 
-	def store_llm_response(self, llm_response: AgentOutput) -> None:
+	def store_llm_response(self, llm_response: StepDecision) -> None:
 		"""Сохраняет ответ LLM в состоянии агента"""
-		self.agent.state.last_model_output = llm_response
+		self.orchestrator.state.last_model_output = llm_response
 
-	async def get_model_output_with_retry(self, context_messages: list[BaseMessage]) -> AgentOutput:
+	async def get_model_output_with_retry(self, context_messages: list[BaseMessage]) -> StepDecision:
 		"""Получает вывод модели с логикой повторных попыток для пустых действий"""
 		# Первичный вызов модели
 		llm_response = await self.get_model_output(context_messages)
 		action_count = len(llm_response.action) if llm_response.action else 0
-		self.agent.logger.debug(
-			f'✅ Шаг {self.agent.state.n_steps}: Получен ответ LLM с {action_count} действиями'
+		self.orchestrator.logger.debug(
+			self.orchestrator.logger.debug(f'Шаг {self.orchestrator.state.n_steps}: Получен ответ LLM с {action_count} действиями')
 		)
 
 		# Проверка на пустые действия
@@ -92,7 +96,7 @@ class LLMManager:
 
 		return llm_response
 
-	def is_empty_action(self, agent_decision: AgentOutput) -> bool:
+	def is_empty_action(self, agent_decision: StepDecision) -> bool:
 		"""Проверяет, является ли действие пустым"""
 		return (
 			not agent_decision.action
@@ -100,9 +104,9 @@ class LLMManager:
 			or all(action.model_dump() == {} for action in agent_decision.action)
 		)
 
-	async def retry_with_clarification(self, context_messages: list[BaseMessage]) -> AgentOutput:
+	async def retry_with_clarification(self, context_messages: list[BaseMessage]) -> StepDecision:
 		"""Повторяет вызов модели с уточняющим сообщением"""
-		self.agent.logger.warning('Модель вернула пустое действие. Повторная попытка...')
+		self.orchestrator.logger.warning('Модель вернула пустое действие. Повторная попытка...')
 
 		clarification_message = UserMessage(
 			content='You forgot to return an action. Please respond with a valid JSON action according to the expected schema with your assessment and next actions.'
@@ -117,10 +121,10 @@ class LLMManager:
 
 		return llm_response
 
-	def create_safe_noop_action(self) -> AgentOutput:
+	def create_safe_noop_action(self) -> StepDecision:
 		"""Создает безопасное noop действие при отсутствии ответа от модели"""
-		self.agent.logger.warning('Модель все еще вернула пустое действие после повтора. Вставляем безопасное noop действие.')
-		action_instance = self.agent.ActionModel()
+		self.orchestrator.logger.warning('Модель все еще вернула пустое действие после повтора. Вставляем безопасное noop действие.')
+		action_instance = self.orchestrator.CommandModel()
 		setattr(
 			action_instance,
 			'done',
@@ -129,37 +133,37 @@ class LLMManager:
 				'text': 'No next action returned by LLM!',
 			},
 		)
-		# Создаем новый AgentOutput с noop действием используя текущее состояние
-		return self.agent.AgentOutput(current_state=self.agent.state.current_state, action=[action_instance])
+		# Создаем новый StepDecision с noop действием используя текущее состояние
+		return self.orchestrator.StepDecision(current_state=self.orchestrator.state.current_state, action=[action_instance])
 
 	@observe(name='get_model_output', ignore_input=True, ignore_output=False)
-	async def get_model_output(self, input_messages: list[BaseMessage]) -> AgentOutput:
+	async def get_model_output(self, input_messages: list[BaseMessage]) -> StepDecision:
 		"""Get next action from LLM based on current state"""
 
 		urls_replaced = self.process_messages_and_replace_long_urls_shorter_ones(input_messages)
 
 		# Build kwargs for ainvoke
 		# Примечание: некоторые LLM-провайдеры умеют автоматически строить описания действий на основе output_format
-		kwargs: dict = {'output_format': self.agent.AgentOutput}
+		kwargs: dict = {'output_format': self.orchestrator.StepDecision}
 
 		try:
-			response = await self.agent.llm.ainvoke(input_messages, **kwargs)
-			parsed: AgentOutput = response.completion  # type: ignore[assignment]
+			response = await self.orchestrator.llm.ainvoke(input_messages, **kwargs)
+			parsed: StepDecision = response.completion  # type: ignore[assignment]
 
 			# Replace any shortened URLs in the LLM response back to original URLs
 			if urls_replaced:
 				self.recursive_process_all_strings_inside_pydantic_model(parsed, urls_replaced)
 
 			# cut the number of actions to max_actions_per_step if needed
-			if len(parsed.action) > self.agent.settings.max_actions_per_step:
-				parsed.action = parsed.action[: self.agent.settings.max_actions_per_step]
+			if len(parsed.action) > self.orchestrator.settings.max_actions_per_step:
+				parsed.action = parsed.action[: self.orchestrator.settings.max_actions_per_step]
 
-			if not (hasattr(self.agent.state, 'paused') and (self.agent.state.paused or self.agent.state.stopped)):
+			if not (hasattr(self.orchestrator.state, 'paused') and (self.orchestrator.state.paused or self.orchestrator.state.stopped)):
 				from core.orchestrator.manager import log_response
-				log_response(parsed, self.agent.tools.registry.registry, self.agent.logger)
-				await self.agent._broadcast_model_state(parsed)
+				log_response(parsed, self.orchestrator.tools.registry.registry, self.orchestrator.logger)
+				await self.orchestrator._broadcast_model_state(parsed)
 
-			self.agent._log_next_action_summary(parsed)
+			self.orchestrator._log_next_action_summary(parsed)
 			return parsed
 		except ValidationError:
 			# Just re-raise - Pydantic's validation errors are already descriptive
@@ -180,10 +184,10 @@ class LLMManager:
 		Once switched, the agent will use the fallback LLM for the rest of the run.
 		"""
 		# Already using fallback - can't switch again
-		if self.agent._using_fallback_llm:
+		if self.orchestrator._using_fallback_llm:
 			# Обрезаем сообщение об ошибке, чтобы не выводить огромные пасты валидации
 			error_msg_short = error.message[:200] + '...' if len(error.message) > 200 else error.message
-			self.agent.logger.warning(
+			self.orchestrator.logger.warning(
 				f'⚠️ Fallback LLM also failed ({type(error).__name__}: {error_msg_short}), no more fallbacks available'
 			)
 			return False
@@ -198,20 +202,20 @@ class LLMManager:
 			return False
 
 		# Check if we have a fallback LLM configured
-		if self.agent._fallback_llm is None:
+		if self.orchestrator._fallback_llm is None:
 			# Обрезаем сообщение об ошибке, чтобы не выводить огромные пасты валидации
 			error_msg_short = error.message[:200] + '...' if len(error.message) > 200 else error.message
-			self.agent.logger.warning(f'⚠️ LLM error ({type(error).__name__}: {error_msg_short}) but no fallback_llm configured')
+			self.orchestrator.logger.warning(f'⚠️ LLM error ({type(error).__name__}: {error_msg_short}) but no fallback_llm configured')
 			return False
 
-		self.log_fallback_switch(error, self.agent._fallback_llm)
+		self.log_fallback_switch(error, self.orchestrator._fallback_llm)
 
 		# Switch to the fallback LLM
-		self.agent.llm = self.agent._fallback_llm
-		self.agent._using_fallback_llm = True
+		self.orchestrator.llm = self.orchestrator._fallback_llm
+		self.orchestrator._using_fallback_llm = True
 
 		# Register the fallback LLM for token cost tracking
-		self.agent.token_cost_service.register_llm(self.agent._fallback_llm)
+		self.orchestrator.token_cost_service.register_llm(self.orchestrator._fallback_llm)
 
 		return True
 
@@ -219,13 +223,13 @@ class LLMManager:
 		"""Log when switching to a fallback LLM."""
 		from core.ai_models.models import BaseChatModel
 		
-		original_model = self.agent._original_llm.model if hasattr(self.agent._original_llm, 'model') else 'unknown'
+		primary_model = self.orchestrator._primary_llm.model if hasattr(self.orchestrator._primary_llm, 'model') else 'unknown'
 		fallback_model = fallback.model if hasattr(fallback, 'model') else 'unknown'
 		error_type = type(error).__name__
 		status_code = getattr(error, 'status_code', 'N/A')
 
-		self.agent.logger.warning(
-			f'⚠️ Primary LLM ({original_model}) failed with {error_type} (status={status_code}), '
+		self.orchestrator.logger.warning(
+			f'⚠️ Primary LLM ({primary_model}) failed with {error_type} (status={status_code}), '
 			f'switching to fallback LLM ({fallback_model})'
 		)
 
@@ -262,7 +266,7 @@ class LLMManager:
 		import hashlib
 
 		replaced_urls: dict[str, str] = {}
-		url_shortening_limit = getattr(self.agent, '_url_shortening_limit', 100)
+		url_shortening_limit = getattr(self.orchestrator, '_url_shortening_limit', 100)
 
 		def replace_url(match: re.Match) -> str:
 			"""URL can only have 1 query and 1 fragment"""

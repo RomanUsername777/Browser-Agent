@@ -1,4 +1,4 @@
-"""Менеджер визуальных операций: скриншоты и DOM для BrowserSession."""
+"""Менеджер визуальных операций: скриншоты и DOM для ChromeSession."""
 
 import base64
 from pathlib import Path
@@ -11,13 +11,13 @@ from core.session.events import ScreenshotEvent
 from core.observability import observe_debug
 
 if TYPE_CHECKING:
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 
 class VisualOperationsManager:
 	"""Менеджер для работы со скриншотами и DOM элементами браузера."""
 
-	def __init__(self, browser_session: 'BrowserSession'):
+	def __init__(self, browser_session: 'ChromeSession'):
 		self.browser_session = browser_session
 
 	# ========== Screenshot Methods ==========

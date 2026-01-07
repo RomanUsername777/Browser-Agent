@@ -96,6 +96,10 @@ class ClickRoleAction(BaseModel):
 	exact: bool = Field(default=False, description='Если True, искать точное совпадение имени')
 
 
+class WaitAction(BaseModel):
+	seconds: int = Field(default=3, ge=1, le=30, description='Количество секунд для ожидания (от 1 до 30)')
+
+
 class WaitForUserInputAction(BaseModel):
 	message: str | None = Field(
 		default=None,

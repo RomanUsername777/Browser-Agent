@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import anyio
 
 from core.dom_processing.manager import EnhancedDOMTreeNode
-from core.session.events import ClickCoordinateEvent, ClickElementEvent, FileDownloadedEvent
+from core.session.events import CoordinateClickRequest, ElementClickRequest, FileDownloadedEvent
 from core.session.models import BrowserError, URLNotAllowedError
 from core.observability import observe_debug
 
@@ -29,8 +29,9 @@ class ClickHandler:
 		self.browser_controller = watchdog.browser_controller
 		self.logger = watchdog.logger
 
-	async def on_ClickElementEvent(self, event: ClickElementEvent) -> dict | None:
+	async def on_ElementClickRequest(self, event: ElementClickRequest) -> dict | None:
 		"""Обработать запрос клика с CDP."""
+		self.logger.debug(f'on_ElementClickRequest called for node {event.node.node_name}, backend_node_id={event.node.backend_node_id}')
 		# Сохраняем исходный target_id ДО try блока, чтобы он был доступен в finally
 		original_target_id = self.browser_session.agent_focus_target_id if self.browser_session.agent_focus_target_id else None
 
@@ -116,7 +117,9 @@ class ClickHandler:
 
 			# Perform the actual click using internal implementation
 			starting_target_id = original_target_id
+			self.logger.debug(f'Calling _click_element_node_impl for backend_node_id={dom_node.backend_node_id}')
 			click_metadata = await self._click_element_node_impl(dom_node, starting_target_id=starting_target_id)
+			self.logger.debug(f'_click_element_node_impl returned: {click_metadata}')
 			download_path = None  # moved to downloads_watchdog.py
 
 			# Check for validation errors - return them without raising to avoid ERROR logs
@@ -139,7 +142,7 @@ class ClickHandler:
 			raise
 
 
-	async def on_ClickCoordinateEvent(self, event: ClickCoordinateEvent) -> dict | None:
+	async def on_CoordinateClickRequest(self, event: CoordinateClickRequest) -> dict | None:
 		"""Обработать клик по координатам с CDP."""
 		try:
 			# Проверить, активна ли сессия перед попыткой любых операций
@@ -204,6 +207,7 @@ class ClickHandler:
 			element_node: The DOM element to click
 			starting_target_id: Original target_id before click (for refocus after click)
 		"""
+		self.logger.debug(f'[_click_element_node_impl] START for backend_node_id={element_node.backend_node_id}')
 
 		try:
 			# Check if element is a file input or select dropdown - these should not be clicked
@@ -221,7 +225,9 @@ class ClickHandler:
 				return {'validation_error': msg}
 
 			# Get CDP client
+			self.logger.debug(f'[_click_element_node_impl] Getting CDP client...')
 			cdp_session = await self.browser_session.cdp_client_for_node(element_node)
+			self.logger.debug(f'[_click_element_node_impl] Got CDP session: {cdp_session.session_id if cdp_session else None}')
 
 			# Get the correct session ID for the element's frame
 			session_id = cdp_session.session_id
@@ -230,20 +236,25 @@ class ClickHandler:
 			backend_node_id = element_node.backend_node_id
 
 			# Get viewport dimensions for visibility checks через контроллер
+			self.logger.debug(f'[_click_element_node_impl] Getting layout metrics...')
 			layout_metrics = await self.browser_controller.get_layout_metrics(cdp_session)
+			self.logger.debug(f'[_click_element_node_impl] Got layout metrics: {layout_metrics.get("layoutViewport", {}).get("clientWidth")}x{layout_metrics.get("layoutViewport", {}).get("clientHeight")}')
 			viewport_width = layout_metrics['layoutViewport']['clientWidth']
 			viewport_height = layout_metrics['layoutViewport']['clientHeight']
 
 			# Прокрутить элемент в видимую область СНАЧАЛА перед получением координат через контроллер
 			try:
+				self.logger.debug(f'[_click_element_node_impl] Scrolling into view...')
 				await self.browser_controller.scroll_into_view(cdp_session, backend_node_id)
 				await asyncio.sleep(0.05)  # Подождать завершения прокрутки
-				self.logger.debug('Scrolled element into view before getting coordinates')
+				self.logger.debug(f'[_click_element_node_impl] Scrolled element into view')
 			except Exception as scroll_error:
-				self.logger.debug(f'Failed to scroll element into view: {scroll_error}')
+				self.logger.debug(f'[_click_element_node_impl] Failed to scroll: {scroll_error}')
 
 			# Получить координаты элемента используя унифицированный метод ПОСЛЕ прокрутки
+			self.logger.debug(f'[_click_element_node_impl] Getting element coordinates...')
 			element_bbox = await self.browser_session.get_element_coordinates(backend_node_id, cdp_session)
+			self.logger.debug(f'[_click_element_node_impl] Got element_bbox: {element_bbox}')
 
 			# Преобразовать rect в формат quads, если получили координаты
 			quad_list = []
@@ -306,7 +317,7 @@ class ClickHandler:
 						session_id=session_id,
 					)
 					await asyncio.sleep(0.1)
-					# Navigation is handled by BrowserSession via events
+					# Navigation is handled by ChromeSession via events
 					return None
 				except Exception as js_e:
 					self.logger.warning(f'CDP JavaScript click also failed: {js_e}')
@@ -330,14 +341,14 @@ class ClickHandler:
 				y_min, y_max = min(y_coordinates), max(y_coordinates)
 
 				# Проверить, пересекается ли quad с viewport
-				if x_max < 0 or y_max < 0 or x_min > view_width or y_min > view_height:
+				if x_max < 0 or y_max < 0 or x_min > viewport_width or y_min > viewport_height:
 					continue  # Quad полностью вне viewport
 
 				# Вычислить видимую область (пересечение с viewport)
 				visible_x_min = max(0, x_min)
-				visible_x_max = min(view_width, x_max)
+				visible_x_max = min(viewport_width, x_max)
 				visible_y_min = max(0, y_min)
-				visible_y_max = min(view_height, y_max)
+				visible_y_max = min(viewport_height, y_max)
 
 				visible_width_value = visible_x_max - visible_x_min
 				visible_height_value = visible_y_max - visible_y_min
@@ -357,8 +368,8 @@ class ClickHandler:
 			click_y = sum(selected_quad[i] for i in range(1, 8, 2)) / 4
 
 			# Убедиться, что точка клика находится в пределах границ viewport
-			click_x = max(0, min(view_width - 1, click_x))
-			click_y = max(0, min(view_height - 1, click_y))
+			click_x = max(0, min(viewport_width - 1, click_x))
+			click_y = max(0, min(viewport_height - 1, click_y))
 
 			# Проверить на перекрытие перед попыткой CDP клика
 			is_occluded = await self._check_element_occlusion(backend_node_id, click_x, click_y, cdp_session)
@@ -400,6 +411,7 @@ class ClickHandler:
 					raise Exception(f'Failed to click occluded element: {js_error}')
 
 			# Выполнить клик используя CDP (элемент не перекрыт)
+			self.logger.debug(f'[_click_element_node_impl] About to click at ({click_x}, {click_y})')
 			try:
 				self.logger.debug(f'👆 Dragging mouse over element before clicking x: {click_x}px y: {click_y}px ...')
 				# Переместить мышь к элементу
@@ -452,7 +464,7 @@ class ClickHandler:
 				except TimeoutError:
 					self.logger.debug('⏱️ Mouse up timed out (possibly due to lag or dialog popup), continuing...')
 
-				self.logger.debug('🖱️ Clicked successfully using x,y coordinates')
+				self.logger.debug(f'[_click_element_node_impl] Clicked successfully at ({click_x}, {click_y})')
 
 				# Вернуть координаты как словарь для метаданных
 				return {'click_x': click_x, 'click_y': click_y}

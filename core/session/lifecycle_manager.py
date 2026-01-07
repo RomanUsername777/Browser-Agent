@@ -26,13 +26,13 @@ from core.helpers import create_task_with_error_handling, is_new_tab_page
 from core.observability import observe_debug
 
 if TYPE_CHECKING:
-    from core.session.session import BrowserSession
+    from core.session.session import ChromeSession
 
 
 class SessionLifecycleManager:
     """Manages browser session lifecycle: initialization, connection, shutdown."""
 
-    def __init__(self, browser_session: 'BrowserSession'):
+    def __init__(self, browser_session: 'ChromeSession'):
         self.browser_session = browser_session
         self.logger = browser_session.logger
 
@@ -131,7 +131,7 @@ class SessionLifecycleManager:
                     )
                     self.browser_session.browser_profile.cdp_url = launch_result.cdp_url
                 else:
-                    raise ValueError('Got BrowserSession(is_local=False) but no cdp_url was provided to connect to!')
+                    raise ValueError('Got ChromeSession(is_local=False) but no cdp_url was provided to connect to!')
 
             assert self.browser_session.cdp_url and '://' in self.browser_session.cdp_url
 

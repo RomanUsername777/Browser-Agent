@@ -5,7 +5,7 @@ import json
 from typing import TYPE_CHECKING
 
 from core.dom_processing.manager import EnhancedDOMTreeNode
-from core.session.events import ScrollEvent, ScrollToTextEvent
+from core.session.events import PageScrollRequest, ScrollToTextRequest
 from core.session.models import BrowserError, URLNotAllowedError
 from core.observability import observe_debug
 
@@ -23,7 +23,7 @@ class ScrollHandler:
 		self.browser_controller = watchdog.browser_controller
 		self.logger = watchdog.logger
 
-	async def on_ScrollEvent(self, event: ScrollEvent) -> None:
+	async def on_PageScrollRequest(self, event: PageScrollRequest) -> None:
 		"""Обработать запрос прокрутки с CDP."""
 		# Проверить, есть ли текущий target для прокрутки
 		if not self.browser_session.agent_focus_target_id:
@@ -77,7 +77,7 @@ class ScrollHandler:
 		# ========== Implementation Methods ==========
 
 
-	async def on_ScrollToTextEvent(self, event: ScrollToTextEvent) -> None:
+	async def on_ScrollToTextRequest(self, event: ScrollToTextRequest) -> None:
 		"""Обработать запрос прокрутки к тексту с CDP. Выбрасывает исключение, если текст не найден."""
 
 

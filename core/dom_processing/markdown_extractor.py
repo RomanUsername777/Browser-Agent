@@ -12,13 +12,13 @@ from core.dom_processing.serializer.html_serializer import HTMLSerializer
 from core.dom_processing.manager import DomService
 
 if TYPE_CHECKING:
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 	from core.session.monitors.watchdogs.dom_watchdog import DOMWatchdog
 
 
 async def extract_clean_markdown(
 	dom_service: DomService | None = None,
-	browser_session: 'BrowserSession | None' = None,
+	browser_session: 'ChromeSession | None' = None,
 	extract_links: bool = False,
 	target_id: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
@@ -105,7 +105,7 @@ async def extract_clean_markdown(
 	return content, stats
 
 
-async def _get_enhanced_dom_tree_from_browser_session(browser_session: 'BrowserSession'):
+async def _get_enhanced_dom_tree_from_browser_session(browser_session: 'ChromeSession'):
 	"""Получить улучшенное DOM-дерево из сессии браузера через DOMWatchdog."""
 	# Получить улучшенное DOM-дерево из DOMWatchdog
 	# Это захватывает текущее состояние страницы, включая динамическое содержимое, shadow roots и т.д.

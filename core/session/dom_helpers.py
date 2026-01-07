@@ -1,17 +1,17 @@
-"""Хелперы для работы с DOM элементами для BrowserSession."""
+"""Хелперы для работы с DOM элементами для ChromeSession."""
 
 from typing import TYPE_CHECKING, Any
 
 from core.dom_processing.models import DOMRect, EnhancedDOMTreeNode
 
 if TYPE_CHECKING:
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 
 class DOMHelpers:
 	"""Хелперы для работы с DOM элементами браузера."""
 
-	def __init__(self, browser_session: 'BrowserSession'):
+	def __init__(self, browser_session: 'ChromeSession'):
 		self.browser_session = browser_session
 
 	async def get_dom_element_by_index(self, index: int) -> EnhancedDOMTreeNode | None:

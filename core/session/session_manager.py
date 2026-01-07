@@ -12,7 +12,7 @@ from cdp_use.cdp.target import AttachedToTargetEvent, DetachedFromTargetEvent, S
 from core.helpers import create_task_with_error_handling
 
 if TYPE_CHECKING:
-	from core.session.session import BrowserSession, CDPSession, Target
+	from core.session.session import ChromeSession, DevToolsSession, Target
 
 
 class SessionManager:
@@ -29,7 +29,7 @@ class SessionManager:
 	SessionManager является ЕДИНСТВЕННЫМ ИСТОЧНИКОМ ПРАВДЫ для всех targets и sessions.
 	"""
 
-	def __init__(self, browser_session: 'BrowserSession'):
+	def __init__(self, browser_session: 'ChromeSession'):
 		self.browser_session = browser_session
 		self.logger = browser_session.logger
 
@@ -37,7 +37,7 @@ class SessionManager:
 		self._targets: dict[TargetID, 'Target'] = {}
 
 		# Все sessions (каналы связи)
-		self._sessions: dict[SessionID, 'CDPSession'] = {}
+		self._sessions: dict[SessionID, 'DevToolsSession'] = {}
 
 		# Сопоставление: target -> сессии, прикреплённые к нему
 		self._target_sessions: dict[TargetID, set[SessionID]] = {}
@@ -106,7 +106,7 @@ class SessionManager:
 		# Discover and initialize ALL existing targets
 		await self._initialize_existing_targets()
 
-	def _get_session_for_target(self, target_id: TargetID) -> 'CDPSession | None':
+	def _get_session_for_target(self, target_id: TargetID) -> 'DevToolsSession | None':
 		"""Внутренний: Получить ЛЮБУЮ валидную сессию для target (выбирает первую доступную).
 
 		⚠️ ВНУТРЕННИЙ API - Используйте browser_session.get_or_create_cdp_session() вместо этого!
@@ -116,7 +116,7 @@ class SessionManager:
 			target_id: ID target для получения сессии
 
 		Returns:
-			CDPSession, если существует, None, если target отсоединён
+			DevToolsSession, если существует, None, если target отсоединён
 		"""
 		session_ids = self._target_sessions.get(target_id, set())
 		if not session_ids:
@@ -229,33 +229,33 @@ class SessionManager:
 		"""
 		return list(self._targets.keys())
 
-	def get_all_sessions(self) -> dict[SessionID, 'CDPSession']:
+	def get_all_sessions(self) -> dict[SessionID, 'DevToolsSession']:
 		"""Get all sessions (read-only access to owned data).
 
 		Returns:
-			Dict mapping session_id to CDPSession objects
+			Dict mapping session_id to DevToolsSession objects
 		"""
 		return self._sessions
 
-	def get_session(self, session_id: SessionID) -> 'CDPSession | None':
+	def get_session(self, session_id: SessionID) -> 'DevToolsSession | None':
 		"""Get session from owned data.
 
 		Args:
 			session_id: Session ID to get
 
 		Returns:
-			CDPSession object if found, None otherwise
+			DevToolsSession object if found, None otherwise
 		"""
 		return self._sessions.get(session_id)
 
-	def get_all_sessions_for_target(self, target_id: TargetID) -> list['CDPSession']:
+	def get_all_sessions_for_target(self, target_id: TargetID) -> list['DevToolsSession']:
 		"""Get ALL sessions attached to a target from owned data.
 
 		Args:
 			target_id: Target ID to get sessions for
 
 		Returns:
-			List of all CDPSession objects for this target
+			List of all DevToolsSession objects for this target
 		"""
 		session_ids = self._target_sessions.get(target_id, set())
 		return [self._sessions[sid] for sid in session_ids if sid in self._sessions]
@@ -422,12 +422,12 @@ class SessionManager:
 			existing_target.url = target_info.get('url', existing_target.url)
 			existing_target.title = target_info.get('title', existing_target.title)
 
-		# Create CDPSession (communication channel)
-		from core.session.session import CDPSession
+		# Create DevToolsSession (communication channel)
+		from core.session.session import DevToolsSession
 
 		assert self.browser_session._cdp_client_root is not None, 'Root CDP client required'
 
-		cdp_session = CDPSession(
+		cdp_session = DevToolsSession(
 			cdp_client=self.browser_session._cdp_client_root,
 			target_id=target_id,
 			session_id=session_id,
@@ -822,7 +822,7 @@ class SessionManager:
 			except asyncio.CancelledError:
 				pass
 
-	async def _enable_page_monitoring(self, cdp_session: 'CDPSession') -> None:
+	async def _enable_page_monitoring(self, cdp_session: 'DevToolsSession') -> None:
 		"""Enable lifecycle events and network monitoring for a page target.
 
 		This is called once per page when it's created, avoiding handler accumulation.

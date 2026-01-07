@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 from bubus import BaseEvent, EventBus
 from pydantic import BaseModel, ConfigDict, Field
 
-from core.session.session import BrowserSession
+from core.session.session import ChromeSession
 
 
 class BaseWatchdog(BaseModel):
@@ -21,7 +21,7 @@ class BaseWatchdog(BaseModel):
 	"""
 
 	model_config = ConfigDict(
-		arbitrary_types_allowed=True,  # разрешаем несериализуемые объекты типа EventBus/BrowserSession в полях
+		arbitrary_types_allowed=True,  # разрешаем несериализуемые объекты типа EventBus/ChromeSession в полях
 		extra='forbid',  # не разрешаем неявное состояние класса/экземпляра, всё должно быть правильно типизированным Field или PrivateAttr
 		validate_assignment=False,  # избегаем повторного запуска __init__ / валидаторов при каждом присваивании
 		revalidate_instances='never',  # избегаем повторного запуска __init__ / валидаторов и стирания приватных атрибутов
@@ -33,11 +33,11 @@ class BaseWatchdog(BaseModel):
 	EMITS: ClassVar[list[type[BaseEvent[Any]]]] = []  # События, которые генерирует этот watchdog
 
 	# Основные зависимости
-	browser_session: BrowserSession = Field()
+	browser_session: ChromeSession = Field()
 	event_bus: EventBus = Field()
 
-	# Общее состояние, к которому могут нуждаться другие watchdogs, НЕ должно определяться здесь, а на BrowserSession!
-	# Общие вспомогательные методы, нужные другим watchdogs, НЕ должны определяться здесь, а на BrowserSession!
+	# Общее состояние, к которому могут нуждаться другие watchdogs, НЕ должно определяться здесь, а на ChromeSession!
+	# Общие вспомогательные методы, нужные другим watchdogs, НЕ должны определяться здесь, а на ChromeSession!
 
 	@property
 	def logger(self):
@@ -45,7 +45,7 @@ class BaseWatchdog(BaseModel):
 		return self.browser_session.logger
 
 	@staticmethod
-	def attach_handler_to_session(browser_session: 'BrowserSession', event_class: type[BaseEvent[Any]], handler) -> None:
+	def attach_handler_to_session(browser_session: 'ChromeSession', event_class: type[BaseEvent[Any]], handler) -> None:
 		"""Прикрепить один обработчик событий к browser session.
 
 		Args:
@@ -248,7 +248,7 @@ class BaseWatchdog(BaseModel):
 		except Exception as e:
 			from core.helpers import logger
 
-			logger.error(f'⚠️ Ошибка во время сборки мусора BrowserSession {self.__class__.__name__} __del__(): {type(e)}: {e}')
+			logger.error(f'⚠️ Ошибка во время сборки мусора ChromeSession {self.__class__.__name__} __del__(): {type(e)}: {e}')
 
 
 # Алиас для обратной совместимости

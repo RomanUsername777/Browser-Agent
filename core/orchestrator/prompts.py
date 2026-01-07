@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 from core.session.models import BrowserStateSummary
 
 if TYPE_CHECKING:
-	from core.orchestrator.models import AgentStepInfo
+	from core.orchestrator.models import StepContext
 
 
 class SystemPrompt:
@@ -77,7 +77,7 @@ class AgentMessagePrompt:
 		read_state_description: str | None = None,
 		task: str | None = None,
 		include_attributes: list[str] | None = None,
-		step_info: Optional['AgentStepInfo'] = None,
+		step_info: Optional['StepContext'] = None,
 		page_filtered_actions: str | None = None,
 		max_clickable_elements_length: int = 40000,
 		sensitive_data: str | None = None,
@@ -93,7 +93,7 @@ class AgentMessagePrompt:
 	):
 		self.browser_state: 'BrowserStateSummary' = browser_state_summary
 		self.file_system: Any | None = file_system
-		self.agent_history_description: str | None = agent_history_description
+		self.orchestrator_history_description: str | None = agent_history_description
 		self.read_state_description: str | None = read_state_description
 		self.task: str | None = task
 		self.include_attributes = include_attributes
@@ -1225,7 +1225,7 @@ Available tabs:
 		# Собираем полное описание состояния
 		state_description = (
 			'<agent_history>\n'
-			+ (self.agent_history_description.strip('\n') if self.agent_history_description else '')
+			+ (self.orchestrator_history_description.strip('\n') if self.orchestrator_history_description else '')
 			+ '\n</agent_history>\n\n'
 		)
 		state_description += '<agent_state>\n' + self._get_agent_state_description().strip('\n') + '\n</agent_state>\n'

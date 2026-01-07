@@ -92,10 +92,10 @@ def setup_logging(stream=None, log_level=None, force_setup=False, debug_log_file
 			# Очищать имена только в режиме INFO, сохранять все в режиме DEBUG
 			if self.level_value > logging.DEBUG and isinstance(log_record.name, str) and log_record.name.startswith('core.'):
 				# Извлечь чистые имена компонентов из имен логгеров
-				if 'Agent' in log_record.name:
-					log_record.name = 'Agent'
-				elif 'BrowserSession' in log_record.name:
-					log_record.name = 'BrowserSession'
+				if 'TaskOrchestrator' in log_record.name:
+					log_record.name = 'TaskOrchestrator'
+				elif 'ChromeSession' in log_record.name:
+					log_record.name = 'ChromeSession'
 				elif 'tools' in log_record.name:
 					log_record.name = 'tools'
 				elif 'dom' in log_record.name:

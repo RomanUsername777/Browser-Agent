@@ -5,7 +5,7 @@ import json
 from typing import TYPE_CHECKING
 
 from core.dom_processing.manager import EnhancedDOMTreeNode
-from core.session.events import GetDropdownOptionsEvent, SelectDropdownOptionEvent
+from core.session.events import DropdownOptionsRequest, DropdownSelectRequest
 from core.session.models import BrowserError, URLNotAllowedError
 from core.observability import observe_debug
 
@@ -23,7 +23,7 @@ class DropdownHandler:
 		self.browser_controller = watchdog.browser_controller
 		self.logger = watchdog.logger
 
-	async def on_GetDropdownOptionsEvent(self, event: GetDropdownOptionsEvent) -> dict[str, str]:
+	async def on_DropdownOptionsRequest(self, event: DropdownOptionsRequest) -> dict[str, str]:
 		"""Обработать запрос получения опций dropdown с CDP."""
 		try:
 			# Использовать предоставленный узел
@@ -251,7 +251,7 @@ class DropdownHandler:
 			)
 
 
-	async def on_SelectDropdownOptionEvent(self, event: SelectDropdownOptionEvent) -> dict[str, str]:
+	async def on_DropdownSelectRequest(self, event: DropdownSelectRequest) -> dict[str, str]:
 		"""Обработать запрос выбора опции dropdown с CDP."""
 		try:
 			# Использовать предоставленный узел

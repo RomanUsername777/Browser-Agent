@@ -4,28 +4,28 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from core.actions.registry.models import ActionModel
-from core.orchestrator.models import ActionResult
+from core.actions.registry.models import CommandModel
+from core.orchestrator.models import ExecutionResult
 
 if TYPE_CHECKING:
-    from core.orchestrator.manager import Agent
+    from core.orchestrator.manager import TaskOrchestrator
 
 
 class ActionExecutionManager:
     """Менеджер для выполнения действий агента с security layer."""
 
-    def __init__(self, agent: 'Agent'):
-        self.agent = agent
+    def __init__(self, agent: 'TaskOrchestrator'):
+        self.orchestrator = agent
         self.logger = agent.logger
 
-    async def multi_act(self, actions: list[ActionModel]) -> list[ActionResult]:
+    async def multi_act(self, actions: list[CommandModel]) -> list[ExecutionResult]:
         """Execute multiple actions with security layer and special case handling."""
-        results: list[ActionResult] = []
+        results: list[ExecutionResult] = []
         total_actions = len(actions)
 
-        assert self.agent.browser_session is not None, 'BrowserSession is not set up'
+        assert self.orchestrator.browser_session is not None, 'ChromeSession is not set up'
         try:
-            cached_state = self.agent.browser_session._cached_browser_state_summary
+            cached_state = self.orchestrator.browser_session._cached_browser_state_summary
             if cached_state is not None:
                 if isinstance(cached_state, dict):
                     dom_state = cached_state.get('dom_state', {})
@@ -58,11 +58,11 @@ class ActionExecutionManager:
 
             # wait between actions (only after first action)
             if i > 0:
-                self.logger.debug(f'Waiting {self.agent.browser_profile.wait_between_actions} seconds between actions')
-                await asyncio.sleep(self.agent.browser_profile.wait_between_actions)
+                self.logger.debug(f'Waiting {self.orchestrator.browser_profile.wait_between_actions} seconds between actions')
+                await asyncio.sleep(self.orchestrator.browser_profile.wait_between_actions)
 
             try:
-                await self.agent._check_stop_or_pause()
+                await self.orchestrator._check_stop_or_pause()
                 # Get action name from the action model
                 action_data = action.model_dump(exclude_unset=True)
                 action_name = next(iter(action_data.keys())) if action_data else 'unknown'
@@ -71,41 +71,47 @@ class ActionExecutionManager:
                 action, action_name, action_data = await self._apply_security_layer(action, action_name, action_data)
 
                 # Email subagent handling
-                await self._handle_email_subagent_context(action_name, action_data)
+                if self.orchestrator.browser_session is not None:
+                    browser_state = self.orchestrator.browser_session._cached_browser_state_summary
+                    if browser_state:
+                        # Информируем агента о наличии диалога
+                        if self.orchestrator.email_subagent.detect_dialog(browser_state):
+                            self.logger.info('ℹ️ Обнаружен открытый диалог - агент должен решить: работать с ним или закрыть через Escape')
 
                 # Log action before execution
                 await self._log_action(action, action_name, i + 1, total_actions)
 
                 time_start = time.time()
 
-                result = await self.agent.tools.act(
+                result = await self.orchestrator.tools.act(
                     action=action,
-                    browser_session=self.agent.browser_session,
-                    file_system=self.agent.file_system,
-                    page_extraction_llm=self.agent.settings.page_extraction_llm,
-                    sensitive_data=self.agent.sensitive_data,
-                    available_file_paths=self.agent.available_file_paths,
+                    browser_session=self.orchestrator.browser_session,
+                    file_system=self.orchestrator.file_system,
+                    page_extraction_llm=self.orchestrator.settings.page_extraction_llm,
+                    sensitive_data=self.orchestrator.sensitive_data,
+                    available_file_paths=self.orchestrator.available_file_paths,
                 )
 
                 time_end = time.time()
                 time_elapsed = time_end - time_start
 
                 # Post-action handling (DOM updates, modal tracking)
+                post_action_start = time.time()
                 await self._handle_post_action(action_name, result)
 
                 if result.error:
-                    await self.agent._demo_mode_log(
+                    await self.orchestrator._demo_mode_log(
                         f'Action "{action_name}" failed: {result.error}',
                         'error',
-                        {'action': action_name, 'step': self.agent.state.n_steps},
+                        {'action': action_name, 'step': self.orchestrator.state.n_steps},
                     )
                 elif result.is_done:
                     completion_text = result.long_term_memory or result.extracted_content or 'Task marked as done.'
                     level = 'success' if result.success is not False else 'warning'
-                    await self.agent._demo_mode_log(
+                    await self.orchestrator._demo_mode_log(
                         completion_text,
                         level,
-                        {'action': action_name, 'step': self.agent.state.n_steps},
+                        {'action': action_name, 'step': self.orchestrator.state.n_steps},
                     )
 
                 results.append(result)
@@ -116,22 +122,22 @@ class ActionExecutionManager:
             except Exception as e:
                 # Handle any exceptions during action execution
                 self.logger.error(f'❌ Executing action {i + 1} failed -> {type(e).__name__}: {e}')
-                await self.agent._demo_mode_log(
+                await self.orchestrator._demo_mode_log(
                     f'Action "{action_name}" raised {type(e).__name__}: {e}',
                     'error',
-                    {'action': action_name, 'step': self.agent.state.n_steps},
+                    {'action': action_name, 'step': self.orchestrator.state.n_steps},
                 )
                 raise e
 
         return results
 
     async def _apply_security_layer(
-        self, action: ActionModel, action_name: str, action_data: dict
-    ) -> tuple[ActionModel, str, dict]:
+        self, action: CommandModel, action_name: str, action_data: dict
+    ) -> tuple[CommandModel, str, dict]:
         """Apply security layer checks: captcha, login forms, destructive actions."""
         # Проверка на капчу и форму входа перед выполнением действий
-        if action_name in ['click', 'navigate', 'input'] and self.agent.browser_session is not None:
-            browser_state = self.agent.browser_session._cached_browser_state_summary
+        if action_name in ['click', 'navigate', 'input'] and self.orchestrator.browser_session is not None:
+            browser_state = self.orchestrator.browser_session._cached_browser_state_summary
             if browser_state:
                 url = browser_state['url'] if isinstance(browser_state, dict) else (browser_state.url if browser_state else '')
                 title = browser_state['title'] if isinstance(browser_state, dict) else (browser_state.title if browser_state else '')
@@ -165,8 +171,8 @@ class ActionExecutionManager:
                     action, action_name, action_data = self._handle_destructive_action(action, action_name, action_data, destructive_action_type)
                 
                 # Если достигнут лимит неудачных попыток клика в модальном окне
-                elif self.agent.state.modal_click_failures >= 3 and action_name == 'click':
-                    if browser_state and self.agent.email_subagent.detect_dialog(browser_state):
+                elif self.orchestrator.state.modal_click_failures >= 3 and action_name == 'click':
+                    if browser_state and self.orchestrator.email_subagent.detect_dialog(browser_state):
                         action, action_name, action_data = self._handle_modal_failure(action, action_name, action_data)
 
         return action, action_name, action_data
@@ -288,20 +294,20 @@ class ActionExecutionManager:
         return is_captcha_element, is_destructive_action, destructive_action_type
 
     async def _handle_login_form(
-        self, action: ActionModel, action_name: str, action_data: dict, browser_state
-    ) -> tuple[ActionModel, str, dict]:
+        self, action: CommandModel, action_name: str, action_data: dict, browser_state
+    ) -> tuple[CommandModel, str, dict]:
         """Handle login form detection - replace action with wait_for_user_input."""
         # Проверяем историю агента, чтобы не запрашивать вход повторно
         already_waited_for_login = False
-        if hasattr(self.agent, 'history') and self.agent.history and hasattr(self.agent.history, 'history') and self.agent.history.history:
+        if hasattr(self.orchestrator, 'history') and self.orchestrator.history and hasattr(self.orchestrator.history, 'history') and self.orchestrator.history.history:
             previous_url = None
-            for history_item in reversed(self.agent.history.history[-5:]):
+            for history_item in reversed(self.orchestrator.history.history[-5:]):
                 if history_item.state:
                     previous_url = history_item.state['url'] if isinstance(history_item.state, dict) else (history_item.state.url if history_item.state else None)
                     if previous_url:
                         break
             
-            for history_item in reversed(self.agent.history.history[-5:]):
+            for history_item in reversed(self.orchestrator.history.history[-5:]):
                 if history_item.model_output and history_item.model_output.action:
                     for act in history_item.model_output.action:
                         act_data = act.model_dump(exclude_unset=True)
@@ -318,16 +324,16 @@ class ActionExecutionManager:
                 f'⚠️ Обнаружена форма входа - блокирую действие {action_name} и запрашиваю wait_for_user_input'
             )
             from core.actions.models import WaitForUserInputAction
-            from core.actions.registry.models import ActionModel
+            from core.actions.registry.models import CommandModel
             from pydantic import create_model, Field
             
-            WaitForUserInputActionModel = create_model(
-                'WaitForUserInputActionModel',
-                __base__=ActionModel,
+            WaitForUserInputCommandModel = create_model(
+                'WaitForUserInputCommandModel',
+                __base__=CommandModel,
                 wait_for_user_input=(WaitForUserInputAction, Field(...))
             )
             
-            login_action = WaitForUserInputActionModel(
+            login_action = WaitForUserInputCommandModel(
                 wait_for_user_input=WaitForUserInputAction(
                     message='Пожалуйста, заполните форму входа в браузере (логин, пароль и т.д.)'
                 )
@@ -338,22 +344,22 @@ class ActionExecutionManager:
         
         return action, action_name, action_data
 
-    def _handle_captcha(self, action: ActionModel, action_name: str, action_data: dict) -> tuple[ActionModel, str, dict]:
+    def _handle_captcha(self, action: CommandModel, action_name: str, action_data: dict) -> tuple[CommandModel, str, dict]:
         """Handle CAPTCHA detection - replace action with request_user_input."""
         self.logger.warning(
             f'⚠️ Блокирую действие {action_name} на странице с капчей - агент должен использовать request_user_input'
         )
         from core.actions.models import RequestUserInputAction
-        from core.actions.registry.models import ActionModel
+        from core.actions.registry.models import CommandModel
         from pydantic import create_model, Field
         
-        RequestUserInputActionModel = create_model(
-            'RequestUserInputActionModel',
-            __base__=ActionModel,
+        RequestUserInputCommandModel = create_model(
+            'RequestUserInputCommandModel',
+            __base__=CommandModel,
             request_user_input=(RequestUserInputAction, Field(...))
         )
         
-        captcha_action = RequestUserInputActionModel(
+        captcha_action = RequestUserInputCommandModel(
             request_user_input=RequestUserInputAction(
                 prompt='Пожалуйста, решите капчу в браузере и введите "готово" (или "done") когда закончите'
             )
@@ -364,20 +370,20 @@ class ActionExecutionManager:
         return action, action_name, action_data
 
     def _handle_destructive_action(
-        self, action: ActionModel, action_name: str, action_data: dict, destructive_action_type: str
-    ) -> tuple[ActionModel, str, dict]:
+        self, action: CommandModel, action_name: str, action_data: dict, destructive_action_type: str
+    ) -> tuple[CommandModel, str, dict]:
         """Handle destructive action detection - replace with request_user_input for confirmation."""
         action_description = 'оплату/подтверждение заказа' if destructive_action_type == 'payment' else 'удаление'
         self.logger.warning(
             f'🛡️ Security layer: блокирую деструктивное действие {action_name} ({action_description}) - запрашиваю подтверждение пользователя'
         )
         from core.actions.models import RequestUserInputAction
-        from core.actions.registry.models import ActionModel
+        from core.actions.registry.models import CommandModel
         from pydantic import create_model, Field
         
-        RequestUserInputActionModel = create_model(
-            'RequestUserInputActionModel',
-            __base__=ActionModel,
+        RequestUserInputCommandModel = create_model(
+            'RequestUserInputCommandModel',
+            __base__=CommandModel,
             request_user_input=(RequestUserInputAction, Field(...))
         )
         
@@ -386,7 +392,7 @@ class ActionExecutionManager:
         else:  # delete
             prompt_text = 'Обнаружена кнопка удаления. Вы хотите удалить этот элемент? Ответьте только "да"/"yes" для подтверждения или "нет"/"no" для отмены.'
         
-        destructive_action = RequestUserInputActionModel(
+        destructive_action = RequestUserInputCommandModel(
             request_user_input=RequestUserInputAction(prompt=prompt_text)
         )
         action = destructive_action
@@ -394,23 +400,23 @@ class ActionExecutionManager:
         action_data = {'request_user_input': {'prompt': prompt_text}}
         return action, action_name, action_data
 
-    def _handle_modal_failure(self, action: ActionModel, action_name: str, action_data: dict) -> tuple[ActionModel, str, dict]:
+    def _handle_modal_failure(self, action: CommandModel, action_name: str, action_data: dict) -> tuple[CommandModel, str, dict]:
         """Handle modal click failure - replace with request_user_input."""
         self.logger.warning(
             f'🛑 Блокирую действие {action_name} - достигнут лимит неудачных попыток клика в модальном окне (3). '
             'Запрашиваю помощь пользователя.'
         )
         from core.actions.models import RequestUserInputAction
-        from core.actions.registry.models import ActionModel
+        from core.actions.registry.models import CommandModel
         from pydantic import create_model, Field
         
-        RequestUserInputActionModel = create_model(
-            'RequestUserInputActionModel',
-            __base__=ActionModel,
+        RequestUserInputCommandModel = create_model(
+            'RequestUserInputCommandModel',
+            __base__=CommandModel,
             request_user_input=(RequestUserInputAction, Field(...))
         )
         
-        modal_action = RequestUserInputActionModel(
+        modal_action = RequestUserInputCommandModel(
             request_user_input=RequestUserInputAction(
                 prompt='Не удалось найти кнопку отправки в модальном окне после 3 попыток. Пожалуйста, нажмите кнопку отправки формы в модальном окне вручную, затем введите "готово" (или "done") когда форма будет отправлена.'
             )
@@ -418,37 +424,13 @@ class ActionExecutionManager:
         action = modal_action
         action_name = 'request_user_input'
         action_data = {'request_user_input': {'prompt': 'Не удалось найти кнопку отправки в модальном окне после 3 попыток. Пожалуйста, нажмите кнопку отправки формы в модальном окне вручную, затем введите "готово" (или "done") когда форма будет отправлена.'}}
-        self.agent.state.modal_click_failures = 0
+        self.orchestrator.state.modal_click_failures = 0
         return action, action_name, action_data
 
     async def _handle_email_subagent_context(self, action_name: str, action_data: dict) -> None:
-        """Handle email subagent context logging."""
-        if self.agent.browser_session is not None:
-            browser_state = self.agent.browser_session._cached_browser_state_summary
-            if browser_state:
-                # Информируем агента о наличии диалога
-                if self.agent.email_subagent.detect_dialog(browser_state):
-                    self.logger.info('ℹ️ Обнаружен открытый диалог - агент должен решить: работать с ним или закрыть через Escape')
-                
-                # Логируем метаданные письма только для почтовых клиентов
-                if self.agent.email_subagent.is_email_client(browser_state):
-                    email_metadata = self.agent.email_subagent.extract_email_metadata(browser_state)
-                    
-                    if email_metadata['is_opened'] and action_name == 'click':
-                        click_params = action_data.get('click', {})
-                        index = click_params.get('index')
-                        if index is not None and browser_state.dom_state:
-                            selector_map = browser_state.dom_state.selector_map
-                            clicked_element = selector_map.get(index)
-                            if clicked_element:
-                                self.logger.info(f'📧 Действие на странице почтового клиента:')
-                                if email_metadata['subject']:
-                                    self.logger.info(f'   Тема письма: {email_metadata["subject"]}')
-                                if email_metadata['sender']:
-                                    self.logger.info(f'   Отправитель: {email_metadata["sender"]}')
-                                if email_metadata['body_preview']:
-                                    body_preview = email_metadata['body_preview'][:300] + '...' if len(email_metadata['body_preview']) > 300 else email_metadata['body_preview']
-                                    self.logger.info(f'   Содержание (первые 300 символов): {body_preview}')
+        """Handle email subagent context logging (без лишних логов)."""
+        # Метод оставлен для совместимости, но логи убраны для соответствия best-version
+        pass
 
     async def _log_action(self, action, action_name: str, action_num: int, total_actions: int) -> None:
         """Log the action before execution with colored formatting."""
@@ -487,59 +469,58 @@ class ActionExecutionManager:
         else:
             self.logger.info(f'  {action_header}')
 
-        if self.agent._demo_mode_enabled:
+        if self.orchestrator._demo_mode_enabled:
             panel_message = plain_header
             if plain_param_parts:
                 panel_message = f'{panel_message} {", ".join(plain_param_parts)}'
-            await self.agent._demo_mode_log(panel_message.strip(), 'action', {'action': action_name, 'step': self.agent.state.n_steps})
+            await self.orchestrator._demo_mode_log(panel_message.strip(), 'action', {'action': action_name, 'step': self.orchestrator.state.n_steps})
 
-    async def _handle_post_action(self, action_name: str, result: ActionResult) -> None:
+    async def _handle_post_action(self, action_name: str, result: ExecutionResult) -> None:
         """Handle post-action processing: DOM updates, modal tracking."""
         # После действий, которые могут изменить DOM (особенно в SPA), ждем обновления страницы
         if action_name in ['click', 'navigate']:
-            wait_time = 2.0
+            wait_time = 2.0  # Одинаковое время для click и navigate
             self.logger.info(f'⏳ Ожидание {wait_time}s после {action_name} для обновления DOM (SPA)')
             await asyncio.sleep(wait_time)
             
-            # Инвалидируем кэш DOM watchdog и selector_map
-            if self.agent.browser_session and self.agent.browser_session._dom_watchdog:
-                self.agent.browser_session._dom_watchdog.clear_cache()
-                # Также очищаем кэшированную selector_map в BrowserSession
-                self.agent.browser_session._cached_selector_map.clear()
+            # Инвалидируем кэш DOM watchdog (selector_map очистится автоматически при перестройке DOM)
+            if self.orchestrator.browser_session and self.orchestrator.browser_session._dom_watchdog:
+                self.orchestrator.browser_session._dom_watchdog.clear_cache()
                 self.logger.info(f'🔄 Кэш DOM очищен после {action_name} - следующее получение browser_state будет свежим')
             
             # Проверяем, осталось ли модальное окно открытым после клика
-            if action_name == 'click' and self.agent.browser_session:
+            if action_name == 'click' and self.orchestrator.browser_session:
                 await asyncio.sleep(0.5)
-                fresh_browser_state = self.agent.browser_session._cached_browser_state_summary
-                if fresh_browser_state and self.agent.email_subagent.detect_dialog(fresh_browser_state):
-                    self.agent.state.modal_click_failures += 1
+                fresh_browser_state = self.orchestrator.browser_session._cached_browser_state_summary
+                if fresh_browser_state and self.orchestrator.email_subagent.detect_dialog(fresh_browser_state):
+                    self.orchestrator.state.modal_click_failures += 1
                     self.logger.warning(
-                        f'⚠️ Модальное окно все еще открыто после клика. Счетчик неудачных попыток: {self.agent.state.modal_click_failures}/3'
+                        f'⚠️ Модальное окно все еще открыто после клика. Счетчик неудачных попыток: {self.orchestrator.state.modal_click_failures}/3'
                     )
-                    if self.agent.state.modal_click_failures >= 3:
+                    if self.orchestrator.state.modal_click_failures >= 3:
                         self.logger.warning(
                             '🛑 Достигнут лимит неудачных попыток клика в модальном окне (3). '
                             'В следующем шаге будет запрошена помощь пользователя.'
                         )
                 else:
-                    if self.agent.state.modal_click_failures > 0:
-                        self.logger.info(f'✅ Модальное окно закрыто. Счетчик неудачных попыток сброшен с {self.agent.state.modal_click_failures} до 0')
-                        self.agent.state.modal_click_failures = 0
+                    # Модальное окно закрыто - сбрасываем счетчик
+                    if self.orchestrator.state.modal_click_failures > 0:
+                        self.logger.info(f'✅ Модальное окно закрыто. Счетчик неудачных попыток сброшен с {self.orchestrator.state.modal_click_failures} до 0')
+                        self.orchestrator.state.modal_click_failures = 0
             
             # После request_user_input проверяем, закрыто ли модальное окно
-            if action_name == 'request_user_input' and self.agent.browser_session:
+            if action_name == 'request_user_input' and self.orchestrator.browser_session:
                 await asyncio.sleep(0.5)
-                fresh_browser_state = self.agent.browser_session._cached_browser_state_summary
+                fresh_browser_state = self.orchestrator.browser_session._cached_browser_state_summary
                 if fresh_browser_state:
-                    if not self.agent.email_subagent.detect_dialog(fresh_browser_state):
-                        if self.agent.state.modal_click_failures > 0:
-                            self.logger.info(f'✅ Модальное окно закрыто после request_user_input. Счетчик неудачных попыток сброшен с {self.agent.state.modal_click_failures} до 0')
-                            self.agent.state.modal_click_failures = 0
+                    if not self.orchestrator.email_subagent.detect_dialog(fresh_browser_state):
+                        # Модальное окно закрыто после request_user_input - сбрасываем счетчик
+                        if self.orchestrator.state.modal_click_failures > 0:
+                            self.logger.info(f'✅ Модальное окно закрыто после request_user_input. Счетчик неудачных попыток сброшен с {self.orchestrator.state.modal_click_failures} до 0')
+                            self.orchestrator.state.modal_click_failures = 0
                         
                         # Если модальное окно закрыто после request_user_input с подтверждением, задача выполнена
                         if result.extracted_content and ('подтвердил' in result.extracted_content.lower() or 'выполнено' in result.extracted_content.lower()):
-                            self.logger.info('✅ Модальное окно закрыто после request_user_input с подтверждением пользователя. Задача выполнена пользователем - завершаем выполнение.')
                             result.is_done = True
                             result.success = True
                             result.long_term_memory = 'Пользователь успешно выполнил действие (например, нажал кнопку отправки отклика). Задача выполнена.'

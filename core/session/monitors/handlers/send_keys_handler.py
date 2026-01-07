@@ -5,7 +5,7 @@ import json
 from typing import TYPE_CHECKING
 
 from core.dom_processing.manager import EnhancedDOMTreeNode
-from core.session.events import SendKeysEvent, WaitEvent
+from core.session.events import KeyboardInputRequest, DelayRequest
 from core.session.models import BrowserError, URLNotAllowedError
 from core.observability import observe_debug
 from core.interaction.helpers import get_key_info
@@ -25,7 +25,7 @@ class SendKeysHandler:
 		self.browser_controller = watchdog.browser_controller
 		self.logger = watchdog.logger
 
-	async def on_SendKeysEvent(self, event: SendKeysEvent) -> None:
+	async def on_KeyboardInputRequest(self, event: KeyboardInputRequest) -> None:
 		"""Обработать запрос отправки клавиш с CDP."""
 		cdp_connection = await self.browser_session.get_or_create_cdp_session(focus=True)
 		try:
@@ -231,7 +231,7 @@ class SendKeysHandler:
 			raise
 
 
-	async def on_WaitEvent(self, event: WaitEvent) -> None:
+	async def on_DelayRequest(self, event: DelayRequest) -> None:
 		"""Обработать запрос ожидания."""
 		try:
 			# Ограничить время ожидания максимумом

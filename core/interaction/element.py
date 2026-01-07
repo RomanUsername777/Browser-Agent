@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 	from cdp_use.cdp.page.types import Viewport
 	from cdp_use.cdp.runtime.commands import CallFunctionOnParameters
 
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 # Определения типов для операций с элементами
 ModifierType = Literal['Alt', 'Control', 'Meta', 'Shift']
@@ -64,7 +64,7 @@ class Element:
 
 	def __init__(
 		self,
-		browser_session: 'BrowserSession',
+		browser_session: 'ChromeSession',
 		backend_node_id: int,
 		session_id: str | None = None,
 	):

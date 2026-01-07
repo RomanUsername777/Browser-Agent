@@ -3,19 +3,19 @@
 from bubus import EventBus
 
 from core.session.events import (
-	ClickCoordinateEvent,
-	ClickElementEvent,
-	GetDropdownOptionsEvent,
-	GoBackEvent,
-	GoForwardEvent,
-	RefreshEvent,
-	ScrollEvent,
-	ScrollToTextEvent,
-	SelectDropdownOptionEvent,
-	SendKeysEvent,
-	TypeTextEvent,
-	UploadFileEvent,
-	WaitEvent,
+	CoordinateClickRequest,
+	ElementClickRequest,
+	DropdownOptionsRequest,
+	NavigateBackRequest,
+	NavigateForwardRequest,
+	PageRefreshRequest,
+	PageScrollRequest,
+	ScrollToTextRequest,
+	DropdownSelectRequest,
+	KeyboardInputRequest,
+	TextInputRequest,
+	FileUploadRequest,
+	DelayRequest,
 )
 from core.session.monitors.browser_controller import BrowserController
 from core.session.monitors.handlers import (
@@ -31,13 +31,13 @@ from core.session.monitors.handlers import (
 # Импортировать EnhancedDOMTreeNode и перестроить модели событий с прямыми ссылками на него
 # Это должно быть выполнено после завершения всех импортов
 from core.dom_processing.manager import EnhancedDOMTreeNode
-ClickCoordinateEvent.model_rebuild()
-ClickElementEvent.model_rebuild()
-GetDropdownOptionsEvent.model_rebuild()
-SelectDropdownOptionEvent.model_rebuild()
-TypeTextEvent.model_rebuild()
-ScrollEvent.model_rebuild()
-UploadFileEvent.model_rebuild()
+CoordinateClickRequest.model_rebuild()
+ElementClickRequest.model_rebuild()
+DropdownOptionsRequest.model_rebuild()
+DropdownSelectRequest.model_rebuild()
+TextInputRequest.model_rebuild()
+PageScrollRequest.model_rebuild()
+FileUploadRequest.model_rebuild()
 
 
 class DefaultActionWatchdog:
@@ -65,19 +65,19 @@ class DefaultActionWatchdog:
 
 		# Словарь обработчиков событий
 		self.event_handlers = {
-			ClickElementEvent: self._on_click_element,
-			ClickCoordinateEvent: self._on_click_coordinate,
-			TypeTextEvent: self._on_type_text,
-			ScrollEvent: self._on_scroll,
-			GoBackEvent: self._on_go_back,
-			GoForwardEvent: self._on_go_forward,
-			RefreshEvent: self._on_refresh,
-			WaitEvent: self._on_wait,
-			SendKeysEvent: self._on_send_keys,
-			UploadFileEvent: self._on_upload_file,
-			ScrollToTextEvent: self._on_scroll_to_text,
-			GetDropdownOptionsEvent: self._on_get_dropdown_options,
-			SelectDropdownOptionEvent: self._on_select_dropdown_option,
+			ElementClickRequest: self._on_click_element,
+			CoordinateClickRequest: self._on_click_coordinate,
+			TextInputRequest: self._on_type_text,
+			PageScrollRequest: self._on_scroll,
+			NavigateBackRequest: self._on_go_back,
+			NavigateForwardRequest: self._on_go_forward,
+			PageRefreshRequest: self._on_refresh,
+			DelayRequest: self._on_wait,
+			KeyboardInputRequest: self._on_send_keys,
+			FileUploadRequest: self._on_upload_file,
+			ScrollToTextRequest: self._on_scroll_to_text,
+			DropdownOptionsRequest: self._on_get_dropdown_options,
+			DropdownSelectRequest: self._on_select_dropdown_option,
 		}
 
 	@property
@@ -91,54 +91,54 @@ class DefaultActionWatchdog:
 			event_bus.on(event_type, handler)
 
 	# Методы-делегаты для обработчиков событий
-	async def _on_click_element(self, event: ClickElementEvent):
+	async def _on_click_element(self, event: ElementClickRequest):
 		"""Обработать запрос клика с CDP."""
-		return await self.click_handler.on_ClickElementEvent(event)
+		return await self.click_handler.on_ElementClickRequest(event)
 
-	async def _on_click_coordinate(self, event: ClickCoordinateEvent):
+	async def _on_click_coordinate(self, event: CoordinateClickRequest):
 		"""Обработать запрос клика по координатам."""
-		return await self.click_handler.on_ClickCoordinateEvent(event)
+		return await self.click_handler.on_CoordinateClickRequest(event)
 
-	async def _on_type_text(self, event: TypeTextEvent):
+	async def _on_type_text(self, event: TextInputRequest):
 		"""Обработать запрос ввода текста."""
-		return await self.text_input_handler.on_TypeTextEvent(event)
+		return await self.text_input_handler.on_TextInputRequest(event)
 
-	async def _on_scroll(self, event: ScrollEvent):
+	async def _on_scroll(self, event: PageScrollRequest):
 		"""Обработать запрос прокрутки."""
-		return await self.scroll_handler.on_ScrollEvent(event)
+		return await self.scroll_handler.on_PageScrollRequest(event)
 
-	async def _on_go_back(self, event: GoBackEvent):
+	async def _on_go_back(self, event: NavigateBackRequest):
 		"""Обработать запрос возврата назад."""
-		return await self.navigation_handler.on_GoBackEvent(event)
+		return await self.navigation_handler.on_NavigateBackRequest(event)
 
-	async def _on_go_forward(self, event: GoForwardEvent):
+	async def _on_go_forward(self, event: NavigateForwardRequest):
 		"""Обработать запрос перехода вперед."""
-		return await self.navigation_handler.on_GoForwardEvent(event)
+		return await self.navigation_handler.on_NavigateForwardRequest(event)
 
-	async def _on_refresh(self, event: RefreshEvent):
+	async def _on_refresh(self, event: PageRefreshRequest):
 		"""Обработать запрос обновления страницы."""
-		return await self.navigation_handler.on_RefreshEvent(event)
+		return await self.navigation_handler.on_PageRefreshRequest(event)
 
-	async def _on_wait(self, event: WaitEvent):
+	async def _on_wait(self, event: DelayRequest):
 		"""Обработать запрос ожидания."""
-		return await self.send_keys_handler.on_WaitEvent(event)
+		return await self.send_keys_handler.on_DelayRequest(event)
 
-	async def _on_send_keys(self, event: SendKeysEvent):
+	async def _on_send_keys(self, event: KeyboardInputRequest):
 		"""Обработать запрос отправки клавиш."""
-		return await self.send_keys_handler.on_SendKeysEvent(event)
+		return await self.send_keys_handler.on_KeyboardInputRequest(event)
 
-	async def _on_upload_file(self, event: UploadFileEvent):
+	async def _on_upload_file(self, event: FileUploadRequest):
 		"""Обработать запрос загрузки файла."""
-		return await self.file_upload_handler.on_UploadFileEvent(event)
+		return await self.file_upload_handler.on_FileUploadRequest(event)
 
-	async def _on_scroll_to_text(self, event: ScrollToTextEvent):
+	async def _on_scroll_to_text(self, event: ScrollToTextRequest):
 		"""Обработать запрос прокрутки к тексту."""
-		return await self.scroll_handler.on_ScrollToTextEvent(event)
+		return await self.scroll_handler.on_ScrollToTextRequest(event)
 
-	async def _on_get_dropdown_options(self, event: GetDropdownOptionsEvent):
+	async def _on_get_dropdown_options(self, event: DropdownOptionsRequest):
 		"""Обработать запрос получения опций выпадающего списка."""
-		return await self.dropdown_handler.on_GetDropdownOptionsEvent(event)
+		return await self.dropdown_handler.on_DropdownOptionsRequest(event)
 
-	async def _on_select_dropdown_option(self, event: SelectDropdownOptionEvent):
+	async def _on_select_dropdown_option(self, event: DropdownSelectRequest):
 		"""Обработать запрос выбора опции выпадающего списка."""
-		return await self.dropdown_handler.on_SelectDropdownOptionEvent(event)
+		return await self.dropdown_handler.on_DropdownSelectRequest(event)

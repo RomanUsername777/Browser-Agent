@@ -28,7 +28,7 @@ class ConsoleInterface:
         """
         self.session_name = session_name or "default"
         self.headless = headless  # По умолчанию False - браузер всегда видимый
-        self.agent: Optional[Agent] = None
+        self.orchestrator: Optional[Agent] = None
         self.browser: Optional[Browser] = None
         self.llm = None
         self.running = False
@@ -39,7 +39,7 @@ class ConsoleInterface:
     
     def _init_agent(self):
         """Инициализация агента и браузера"""
-        if self.agent is not None:
+        if self.orchestrator is not None:
             return
         
         # Выбор LLM провайдера
@@ -55,12 +55,14 @@ class ConsoleInterface:
                 base_url = base_url.replace('/chat/completions', '')
             # Если используется HydraAI или другой нестандартный провайдер, отключаем response_format
             # так как он может не поддерживаться, и добавляем схему в системный промпт вместо этого
-            is_hydra = base_url and 'hydraai.ru' in base_url.lower()
+            is_hydra = base_url and 'hydraai' in base_url.lower()  # Проверяем 'hydraai' вместо 'hydraai.ru'
             
             # Определяем, является ли модель Claude (для HydraAI)
             is_claude = any(claude_name in openai_model.lower() for claude_name in ['claude', 'sonnet', 'haiku', 'opus'])
             
             print(f"🤖 Используем OpenAI-совместимый API (модель: {openai_model})")
+            if is_hydra:
+                print(f"   ⚠️  HydraAI обнаружен: dont_force_structured_output=True, add_schema_to_system_prompt=True")
             if is_hydra and is_claude:
                 print(f"   ⚠️  Используется Claude через HydraAI - убедитесь, что модель {openai_model} доступна")
             
@@ -98,7 +100,7 @@ class ConsoleInterface:
             return input()
         
         # Создаем агента
-        self.agent = Agent(
+        self.orchestrator = Agent(
             task="",  # Задача будет задаваться позже
             llm=self.llm,
             browser=self.browser,
@@ -165,7 +167,7 @@ class ConsoleInterface:
             return
         
         try:
-            # Получаем информацию о вкладках через метод get_tabs() BrowserSession
+            # Получаем информацию о вкладках через метод get_tabs() ChromeSession
             if self.browser and hasattr(self.browser, 'get_tabs'):
                 tabs = await self.browser.get_tabs()
                 if not tabs:
@@ -198,7 +200,7 @@ class ConsoleInterface:
     
     async def execute_task(self, task: str):
         """Выполнение задачи"""
-        if not self.agent:
+        if not self.orchestrator:
             self._init_agent()
         
         print(f"\n🚀 Выполняю задачу: {task}\n")
@@ -207,17 +209,17 @@ class ConsoleInterface:
         try:
             # Обновляем задачу агента
             # Если задача была пустой при инициализации, просто устанавливаем её
-            if not self.agent.task or self.agent.task == "":
-                self.agent.task = task
+            if not self.orchestrator.task or self.orchestrator.task == "":
+                self.orchestrator.task = task
                 # Обновляем задачу в MessageManager
-                if hasattr(self.agent, '_message_manager') and self.agent._message_manager:
-                    self.agent._message_manager.task = task
+                if hasattr(self.orchestrator, '_message_manager') and self.orchestrator._message_manager:
+                    self.orchestrator._message_manager.task = task
             else:
                 # Если задача уже была, используем метод add_new_task
-                self.agent.add_new_task(task)
+                self.orchestrator.add_new_task(task)
             
             # Запускаем агента
-            result = await self.agent.run(max_steps=50)
+            result = await self.orchestrator.run(max_steps=50)
             
             # Сохраняем в историю
             history_entry = {
@@ -229,11 +231,19 @@ class ConsoleInterface:
             self.task_history.append(history_entry)
             
             # Сохраняем сессию после выполнения задачи
-            # Browser это BrowserSession (алиас), у него есть метод export_storage_state
+            # Browser это ChromeSession (алиас), у него есть метод export_storage_state
             if self.browser and hasattr(self.browser, 'export_storage_state'):
                 try:
-                    await self.browser.export_storage_state(self.storage_state_path)
-                    logger.debug(f'💾 Сессия сохранена в: {self.storage_state_path}')
+                    # Проверяем, что браузер еще подключен перед сохранением
+                    # Используем hasattr для безопасной проверки приватного атрибута
+                    if hasattr(self.browser, '_cdp_client_root') and getattr(self.browser, '_cdp_client_root', None) is not None:
+                        await self.browser.export_storage_state(self.storage_state_path)
+                        logger.debug(f'💾 Сессия сохранена в: {self.storage_state_path}')
+                    else:
+                        logger.debug('💾 Пропущено сохранение сессии: браузер уже закрыт')
+                except (AssertionError, AttributeError) as e:
+                    # Браузер уже закрыт или CDP клиент не инициализирован
+                    logger.debug(f'💾 Пропущено сохранение сессии: браузер уже закрыт ({type(e).__name__})')
                 except Exception as e:
                     logger.warning(f'⚠️  Ошибка при сохранении сессии: {e}')
             
@@ -315,13 +325,21 @@ class ConsoleInterface:
         if self.browser:
             try:
                 # Сохраняем storage_state перед закрытием
-                # Browser это BrowserSession, у него есть метод export_storage_state
+                # Browser это ChromeSession, у него есть метод export_storage_state
                 if hasattr(self.browser, 'export_storage_state'):
-                    storage_state = asyncio.run(self.browser.export_storage_state(self.storage_state_path))
-                    print(f"✅ Сессия сохранена в: {self.storage_state_path}")
+                    # Проверяем, что браузер еще подключен перед сохранением
+                    # Используем hasattr и getattr для безопасной проверки приватного атрибута
+                    if hasattr(self.browser, '_cdp_client_root') and getattr(self.browser, '_cdp_client_root', None) is not None:
+                        storage_state = asyncio.run(self.browser.export_storage_state(self.storage_state_path))
+                        print(f"✅ Сессия сохранена в: {self.storage_state_path}")
+                    else:
+                        print("💾 Пропущено сохранение сессии: браузер уже закрыт")
                 # Закрываем браузер
                 if hasattr(self.browser, 'close'):
                     asyncio.run(self.browser.close())
+            except (AssertionError, AttributeError) as e:
+                # Браузер уже закрыт или CDP клиент не инициализирован - это нормально при завершении
+                print("💾 Пропущено сохранение сессии: браузер уже закрыт")
             except Exception as e:
                 print(f"⚠️  Ошибка при сохранении сессии: {e}")
         print("👋 До свидания!\n")

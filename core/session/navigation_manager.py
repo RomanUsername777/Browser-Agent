@@ -9,7 +9,7 @@ from core.session.events import (
     AgentFocusChangedEvent,
     CloseTabEvent,
     FileDownloadedEvent,
-    NavigateToUrlEvent,
+    UrlNavigationRequest,
     NavigationCompleteEvent,
     NavigationStartedEvent,
     SwitchTabEvent,
@@ -20,19 +20,19 @@ from core.dom_processing.models import EnhancedDOMTreeNode
 from core.helpers import is_new_tab_page
 
 if TYPE_CHECKING:
-    from core.session.session import BrowserSession, CDPSession
+    from core.session.session import ChromeSession, DevToolsSession
 
 
 class NavigationManager:
     """Manages browser navigation, tab switching, and frame operations."""
 
-    def __init__(self, browser_session: 'BrowserSession'):
+    def __init__(self, browser_session: 'ChromeSession'):
         self.browser_session = browser_session
         self.logger = browser_session.logger
 
-    async def on_NavigateToUrlEvent(self, event: NavigateToUrlEvent) -> None:
+    async def on_UrlNavigationRequest(self, event: UrlNavigationRequest) -> None:
         """Handle navigation requests - core browser functionality."""
-        self.logger.debug(f'[on_NavigateToUrlEvent] Received NavigateToUrlEvent: url={event.url}, new_tab={event.new_tab}')
+        self.logger.debug(f'[on_UrlNavigationRequest] Received UrlNavigationRequest: url={event.url}, new_tab={event.new_tab}')
         if not self.browser_session.agent_focus_target_id:
             self.logger.warning('Cannot navigate - browser not connected')
             return
@@ -42,44 +42,44 @@ class NavigationManager:
 
         active_target = self.browser_session.session_manager.get_target(active_target_id)
         if event.new_tab and is_new_tab_page(active_target.url):
-            self.logger.debug(f'[on_NavigateToUrlEvent] Already on blank tab ({active_target.url}), reusing')
+            self.logger.debug(f'[on_UrlNavigationRequest] Already on blank tab ({active_target.url}), reusing')
             event.new_tab = False
 
         try:
-            self.logger.debug(f'[on_NavigateToUrlEvent] Processing new_tab={event.new_tab}')
+            self.logger.debug(f'[on_UrlNavigationRequest] Processing new_tab={event.new_tab}')
 
             if event.new_tab:
                 all_page_targets = self.browser_session.session_manager.get_all_page_targets()
-                self.logger.debug(f'[on_NavigateToUrlEvent] Found {len(all_page_targets)} existing tabs')
+                self.logger.debug(f'[on_UrlNavigationRequest] Found {len(all_page_targets)} existing tabs')
 
                 for tab_index, page_target in enumerate(all_page_targets):
-                    self.logger.debug(f'[on_NavigateToUrlEvent] Tab {tab_index}: url={page_target.url}, targetId={page_target.target_id}')
+                    self.logger.debug(f'[on_UrlNavigationRequest] Tab {tab_index}: url={page_target.url}, targetId={page_target.target_id}')
                     if page_target.url == 'about:blank' and page_target.target_id != active_target_id:
                         selected_target_id = page_target.target_id
                         self.logger.debug(f'Reusing existing about:blank tab #{selected_target_id[-4:]}')
                         break
 
                 if not selected_target_id:
-                    self.logger.debug('[on_NavigateToUrlEvent] No reusable about:blank tab found, creating new tab...')
+                    self.logger.debug('[on_UrlNavigationRequest] No reusable about:blank tab found, creating new tab...')
                     try:
                         selected_target_id = await self.browser_session._cdp_operations._cdp_create_new_page('about:blank')
                         self.logger.debug(f'Created new tab #{selected_target_id[-4:]}')
                         await self.browser_session.event_bus.dispatch(TabCreatedEvent(target_id=selected_target_id, url='about:blank'))
                     except Exception as e:
-                        self.logger.error(f'[on_NavigateToUrlEvent] Failed to create new tab: {type(e).__name__}: {e}')
+                        self.logger.error(f'[on_UrlNavigationRequest] Failed to create new tab: {type(e).__name__}: {e}')
                         selected_target_id = active_target_id
-                        self.logger.warning(f'[on_NavigateToUrlEvent] Falling back to current tab #{selected_target_id[-4:]}')
+                        self.logger.warning(f'[on_UrlNavigationRequest] Falling back to current tab #{selected_target_id[-4:]}')
             else:
                 selected_target_id = selected_target_id or active_target_id
 
             if self.browser_session.agent_focus_target_id is None or self.browser_session.agent_focus_target_id != selected_target_id:
                 current_focus_suffix = self.browser_session.agent_focus_target_id[-4:] if self.browser_session.agent_focus_target_id else "none"
                 self.logger.debug(
-                    f'[on_NavigateToUrlEvent] Switching to target tab {selected_target_id[-4:]} (current: {current_focus_suffix})'
+                    f'[on_UrlNavigationRequest] Switching to target tab {selected_target_id[-4:]} (current: {current_focus_suffix})'
                 )
                 await self.browser_session.event_bus.dispatch(SwitchTabEvent(target_id=selected_target_id))
             else:
-                self.logger.debug(f'[on_NavigateToUrlEvent] Already on target tab {selected_target_id[-4:]}, skipping SwitchTabEvent')
+                self.logger.debug(f'[on_UrlNavigationRequest] Already on target tab {selected_target_id[-4:]}, skipping SwitchTabEvent')
 
             assert self.browser_session.agent_focus_target_id is not None and self.browser_session.agent_focus_target_id == selected_target_id, (
                 'Agent focus not updated to new target_id after SwitchTabEvent should have switched to it'
@@ -311,14 +311,14 @@ class NavigationManager:
                 if 'chrome-extension://' in target_url and (
                     'options.html' in target_url or 'welcome.html' in target_url or 'onboarding.html' in target_url
                 ):
-                    self.logger.info(f'[BrowserSession] 🚫 Closing extension options page: {target_url}')
+                    self.logger.info(f'[ChromeSession] 🚫 Closing extension options page: {target_url}')
                     try:
                         await self.browser_session._cdp_operations._cdp_close_page(target_id)
                     except Exception as e:
-                        self.logger.debug(f'[BrowserSession] Could not close extension page {target_id}: {e}')
+                        self.logger.debug(f'[ChromeSession] Could not close extension page {target_id}: {e}')
 
         except Exception as e:
-            self.logger.debug(f'[BrowserSession] Error closing extension options pages: {e}')
+            self.logger.debug(f'[ChromeSession] Error closing extension options pages: {e}')
 
     async def get_all_frames(self) -> tuple[dict[str, dict], dict[str, str]]:
         """Get a complete frame hierarchy from all browser targets."""
@@ -464,10 +464,10 @@ class NavigationManager:
 
         return all_frames.get(frame_id)
 
-    async def cdp_client_for_target(self, target_id: TargetID) -> 'CDPSession':
+    async def cdp_client_for_target(self, target_id: TargetID) -> 'DevToolsSession':
         return await self.browser_session.get_or_create_cdp_session(target_id, focus=False)
 
-    async def cdp_client_for_frame(self, frame_id: str) -> 'CDPSession':
+    async def cdp_client_for_frame(self, frame_id: str) -> 'DevToolsSession':
         """Get a CDP client attached to the target containing the specified frame."""
         if not self.browser_session.browser_profile.cross_origin_iframes:
             return await self.browser_session.get_or_create_cdp_session()
@@ -486,7 +486,7 @@ class NavigationManager:
 
         raise ValueError(f"Frame with ID '{frame_id}' not found in any target")
 
-    async def cdp_client_for_node(self, node: EnhancedDOMTreeNode) -> 'CDPSession':
+    async def cdp_client_for_node(self, node: EnhancedDOMTreeNode) -> 'DevToolsSession':
         """Get CDP client for a specific DOM node based on its frame."""
         if node.session_id and self.browser_session.session_manager:
             try:

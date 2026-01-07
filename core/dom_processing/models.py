@@ -463,9 +463,9 @@ class EnhancedDOMTreeNode:
 	node_name: str
 	"""Only applicable for `NodeType.ELEMENT_NODE`"""
 	node_value: str
-	"""this is where the value from `NodeType.TEXT_NODE` is stored usually"""
+	"""Здесь хранится значение из `NodeType.TEXT_NODE`"""
 	attributes: dict[str, str]
-	"""slightly changed from the original attributes to be more readable"""
+	"""Атрибуты оптимизированы для лучшей читаемости"""
 	is_scrollable: bool | None
 	"""
 	Whether the node is scrollable.

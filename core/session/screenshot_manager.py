@@ -1,4 +1,4 @@
-"""Менеджер скриншотов для BrowserSession."""
+"""Менеджер скриншотов для ChromeSession."""
 
 import base64
 from pathlib import Path
@@ -10,13 +10,13 @@ from core.session.events import ScreenshotEvent
 from core.observability import observe_debug
 
 if TYPE_CHECKING:
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 
 class ScreenshotManager:
 	"""Менеджер для работы со скриншотами браузера."""
 
-	def __init__(self, browser_session: 'BrowserSession'):
+	def __init__(self, browser_session: 'ChromeSession'):
 		self.browser_session = browser_session
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='take_screenshot')

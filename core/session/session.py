@@ -47,7 +47,7 @@ from core.session.events import (
 	BrowserStoppedEvent,
 	CloseTabEvent,
 	FileDownloadedEvent,
-	NavigateToUrlEvent,
+	UrlNavigationRequest,
 	NavigationCompleteEvent,
 	NavigationStartedEvent,
 	SwitchTabEvent,
@@ -87,7 +87,7 @@ class Target(BaseModel):
 	title: str = 'Unknown title'
 
 
-class CDPSession(BaseModel):
+class DevToolsSession(BaseModel):
 	"""CDP communication channel to a target.
 
 	A session is a connection that allows sending CDP commands to a specific target.
@@ -105,7 +105,7 @@ class CDPSession(BaseModel):
 	_lifecycle_lock: Any = PrivateAttr(default=None)
 
 
-class BrowserSession(BaseModel):
+class ChromeSession(BaseModel):
 	"""Event-driven browser session with backwards compatibility.
 
 	This class provides a 2-layer architecture:
@@ -117,10 +117,10 @@ class BrowserSession(BaseModel):
 	Browser configuration is stored in the browser_profile, session identity in direct fields:
 	```python
 	# Direct settings (recommended for most users)
-	session = BrowserSession(headless=True, user_data_dir='./profile')
+	session = ChromeSession(headless=True, user_data_dir='./profile')
 
 	# Or use a profile (for advanced use cases)
-	session = BrowserSession(browser_profile=BrowserProfile(...))
+	session = ChromeSession(browser_profile=BrowserProfile(...))
 
 	# Access session fields directly, browser settings via profile or property
 	print(session.id)  # Session field
@@ -244,10 +244,10 @@ class BrowserSession(BaseModel):
 		profile_id: UUID | str | None = None,
 		proxy_country_code: ProxyCountryCode | None = None,
 		timeout: int | None = None,
-		# BrowserProfile fields that can be passed directly
-		# From BrowserConnectArgs
+		# Параметры конфигурации браузера
+		# Параметры подключения к браузеру
 		headers: dict[str, str] | None = None,
-		# From BrowserLaunchArgs
+		# Параметры запуска браузера
 		env: dict[str, str | float | bool] | None = None,
 		executable_path: str | Path | None = None,
 		headless: bool | None = None,
@@ -258,7 +258,7 @@ class BrowserSession(BaseModel):
 		devtools: bool | None = None,
 		downloads_path: str | Path | None = None,
 		traces_dir: str | Path | None = None,
-		# From BrowserContextArgs
+		# Параметры контекста браузера
 		accept_downloads: bool | None = None,
 		permissions: list[str] | None = None,
 		user_agent: str | None = None,
@@ -272,9 +272,9 @@ class BrowserSession(BaseModel):
 		record_video_dir: str | Path | None = None,
 		record_video_framerate: int | None = None,
 		record_video_size: dict | None = None,
-		# From BrowserLaunchPersistentContextArgs
+		# Параметры постоянного контекста
 		user_data_dir: str | Path | None = None,
-		# From BrowserNewContextArgs
+		# Параметры состояния хранилища
 		storage_state: str | Path | dict[str, Any] | None = None,
 		# BrowserProfile specific fields
 		## Cloud Browser Fields
@@ -387,7 +387,7 @@ class BrowserSession(BaseModel):
 		description='Target size (width, height) to resize screenshots before sending to LLM. Coordinates from LLM will be scaled back to original viewport size.',
 	)
 
-	# Cache of original viewport size for coordinate conversion (set when browser state is captured)
+	# Кэш исходного размера viewport для конвертации координат (устанавливается при захвате состояния браузера)
 	_original_viewport_size: tuple[int, int] | None = PrivateAttr(default=None)
 
 	# Convenience properties for common browser settings
@@ -442,7 +442,7 @@ class BrowserSession(BaseModel):
 	_browser_operations: Any = PrivateAttr(default=None)
 	_visual_operations: Any = PrivateAttr(default=None)
 	
-	# Backward compatibility aliases
+	# Алиасы для совместимости с предыдущими версиями
 	_screenshot_manager: Any = PrivateAttr(default=None)
 	_storage_manager: Any = PrivateAttr(default=None)
 	_tab_manager: Any = PrivateAttr(default=None)
@@ -474,7 +474,7 @@ class BrowserSession(BaseModel):
 
 	@cached_property
 	def _id_for_logs(self) -> str:
-		"""Get human-friendly semi-unique identifier for differentiating different BrowserSession instances in logs"""
+		"""Get human-friendly semi-unique identifier for differentiating different ChromeSession instances in logs"""
 		# Default to last 4 chars of truly random uuid, less helpful than cdp port but always unique enough
 		log_identifier = self.id[-4:]
 		cdp_url_str = self.cdp_url or 'no-cdp'
@@ -492,10 +492,10 @@ class BrowserSession(BaseModel):
 		return self.agent_focus_target_id[-2:] if self.agent_focus_target_id else f'{red}--{reset}'
 
 	def __repr__(self) -> str:
-		return f'BrowserSession🅑 {self._id_for_logs} 🅣 {self._tab_id_for_logs} (cdp_url={self.cdp_url}, profile={self.browser_profile})'
+		return f'ChromeSession {self._id_for_logs} {self._tab_id_for_logs} (cdp_url={self.cdp_url}, profile={self.browser_profile})'
 
 	def __str__(self) -> str:
-		return f'BrowserSession🅑 {self._id_for_logs} 🅣 {self._tab_id_for_logs}'
+		return f'ChromeSession {self._id_for_logs} {self._tab_id_for_logs}'
 
 	async def reset(self) -> None:
 		"""Clear all cached CDP sessions with proper cleanup. Delegates to SessionLifecycleManager."""
@@ -518,7 +518,7 @@ class BrowserSession(BaseModel):
 		self._cdp_operations = CDPOperationsManager(self)
 		self._navigation_manager = NavigationManager(self)
 		
-		# Backward compatibility aliases
+		# Алиасы для совместимости с предыдущими версиями
 		self._tab_manager = self._browser_operations
 		self._storage_manager = self._browser_operations
 		self._screenshot_manager = self._visual_operations
@@ -532,15 +532,15 @@ class BrowserSession(BaseModel):
 
 		if any('on_BrowserStartEvent' in name for name in start_handler_names):
 			raise RuntimeError(
-				'[BrowserSession] Duplicate handler registration attempted! '
+				'[ChromeSession] Duplicate handler registration attempted! '
 				'on_BrowserStartEvent is already registered. '
-				'This likely means BrowserSession was initialized multiple times with the same EventBus.'
+				'This likely means ChromeSession was initialized multiple times with the same EventBus.'
 			)
 
 		# Register handlers via lifecycle and navigation managers
 		BaseWatchdog.attach_handler_to_session(self, BrowserStartEvent, self._lifecycle_manager.on_BrowserStartEvent)
 		BaseWatchdog.attach_handler_to_session(self, BrowserStopEvent, self._lifecycle_manager.on_BrowserStopEvent)
-		BaseWatchdog.attach_handler_to_session(self, NavigateToUrlEvent, self._navigation_manager.on_NavigateToUrlEvent)
+		BaseWatchdog.attach_handler_to_session(self, UrlNavigationRequest, self._navigation_manager.on_UrlNavigationRequest)
 		BaseWatchdog.attach_handler_to_session(self, SwitchTabEvent, self._navigation_manager.on_SwitchTabEvent)
 		BaseWatchdog.attach_handler_to_session(self, TabCreatedEvent, self._navigation_manager.on_TabCreatedEvent)
 		BaseWatchdog.attach_handler_to_session(self, TabClosedEvent, self._navigation_manager.on_TabClosedEvent)
@@ -564,9 +564,9 @@ class BrowserSession(BaseModel):
 		"""Handle browser start request. Delegates to SessionLifecycleManager."""
 		return await self._lifecycle_manager.on_BrowserStartEvent(event)
 
-	async def on_NavigateToUrlEvent(self, event: NavigateToUrlEvent) -> None:
+	async def on_UrlNavigationRequest(self, event: UrlNavigationRequest) -> None:
 		"""Handle navigation requests. Delegates to NavigationManager."""
-		await self._navigation_manager.on_NavigateToUrlEvent(event)
+		await self._navigation_manager.on_UrlNavigationRequest(event)
 
 	async def _navigate_and_wait(self, url: str, target_id: str, timeout: float | None = None) -> None:
 		"""Navigate to URL and wait for page readiness. Delegates to NavigationManager."""
@@ -647,7 +647,7 @@ class BrowserSession(BaseModel):
 		"""Export all browser cookies and storage to storage_state format. Delegates to BrowserOperationsManager."""
 		return await self._browser_operations.export_storage_state(output_path=output_path)
 
-	async def get_or_create_cdp_session(self, target_id: TargetID | None = None, focus: bool = True) -> CDPSession:
+	async def get_or_create_cdp_session(self, target_id: TargetID | None = None, focus: bool = True) -> DevToolsSession:
 		"""Get CDP session for a target from the event-driven pool.
 
 		With autoAttach=True, sessions are created automatically by Chrome and added
@@ -658,7 +658,7 @@ class BrowserSession(BaseModel):
 			focus: If True, switches agent focus to this target (page targets only).
 
 		Returns:
-			CDPSession for the specified target.
+			DevToolsSession for the specified target.
 
 		Raises:
 			ValueError: If target doesn't exist or session is not available.
@@ -922,7 +922,7 @@ class BrowserSession(BaseModel):
 		"""Remove highlights from the page using CDP. Delegates to VisualOperationsManager."""
 		await self._visual_operations.remove_highlights()
 
-	async def get_element_coordinates(self, backend_node_id: int, cdp_session: CDPSession) -> DOMRect | None:
+	async def get_element_coordinates(self, backend_node_id: int, cdp_session: DevToolsSession) -> DOMRect | None:
 		"""Get element coordinates for a backend node ID using multiple methods. Delegates to VisualOperationsManager."""
 		return await self._visual_operations.get_element_coordinates(backend_node_id, cdp_session)
 
@@ -1106,15 +1106,15 @@ class BrowserSession(BaseModel):
 		"""Find the frame info for a specific frame ID. Delegates to NavigationManager."""
 		return await self._navigation_manager.find_frame_target(frame_id, all_frames)
 
-	async def cdp_client_for_target(self, target_id: TargetID) -> CDPSession:
+	async def cdp_client_for_target(self, target_id: TargetID) -> DevToolsSession:
 		"""Get CDP client for a target. Delegates to NavigationManager."""
 		return await self._navigation_manager.cdp_client_for_target(target_id)
 
-	async def cdp_client_for_frame(self, frame_id: str) -> CDPSession:
+	async def cdp_client_for_frame(self, frame_id: str) -> DevToolsSession:
 		"""Get CDP client for a frame. Delegates to NavigationManager."""
 		return await self._navigation_manager.cdp_client_for_frame(frame_id)
 
-	async def cdp_client_for_node(self, node: EnhancedDOMTreeNode) -> CDPSession:
+	async def cdp_client_for_node(self, node: EnhancedDOMTreeNode) -> DevToolsSession:
 		"""Get CDP client for a DOM node. Delegates to NavigationManager."""
 		return await self._navigation_manager.cdp_client_for_node(node)
 

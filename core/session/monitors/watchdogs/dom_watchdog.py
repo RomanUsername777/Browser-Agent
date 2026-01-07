@@ -653,7 +653,7 @@ class DOMWatchdog(BaseWatchdog):
 			# Обновить карту селекторов для других watchdogs
 			self.logger.debug('🔍 DOMWatchdog._build_dom_tree_without_highlights: Updating selector maps...')
 			self.selector_map = self.current_dom_state.selector_map
-			# Обновить кэшированную карту селекторов BrowserSession
+			# Обновить кэшированную карту селекторов ChromeSession
 			if self.browser_session:
 				self.browser_session.update_cached_selector_map(self.selector_map)
 			self.logger.debug(

@@ -1,4 +1,4 @@
-"""Менеджер storage (cookies, localStorage, sessionStorage) для BrowserSession."""
+"""Менеджер storage (cookies, localStorage, sessionStorage) для ChromeSession."""
 
 import json
 from pathlib import Path
@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING, Any
 from cdp_use.cdp.network import Cookie
 
 if TYPE_CHECKING:
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 
 class StorageManager:
 	"""Менеджер для работы с cookies и storage браузера."""
 
-	def __init__(self, browser_session: 'BrowserSession'):
+	def __init__(self, browser_session: 'ChromeSession'):
 		self.browser_session = browser_session
 
 	async def cookies(self) -> list['Cookie']:

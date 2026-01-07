@@ -11,19 +11,19 @@ except ImportError:
 	Laminar = None  # type: ignore
 from pydantic import BaseModel
 
-from core.orchestrator.models import ActionModel, ActionResult
-from core.session.session import BrowserSession
+from core.orchestrator.models import CommandModel, ExecutionResult
+from core.session.session import ChromeSession
 from core.session.events import (
-	ClickCoordinateEvent,
-	ClickElementEvent,
-	GetDropdownOptionsEvent,
-	GoBackEvent,
-	NavigateToUrlEvent,
-	ScrollEvent,
-	ScrollToTextEvent,
-	SendKeysEvent,
-	TypeTextEvent,
-	UploadFileEvent,
+	CoordinateClickRequest,
+	ElementClickRequest,
+	DropdownOptionsRequest,
+	NavigateBackRequest,
+	UrlNavigationRequest,
+	PageScrollRequest,
+	ScrollToTextRequest,
+	KeyboardInputRequest,
+	TextInputRequest,
+	FileUploadRequest,
 )
 from core.session.models import BrowserError
 from core.dom_processing.manager import EnhancedDOMTreeNode
@@ -47,6 +47,7 @@ from core.actions.models import (
 	SelectDropdownOptionAction,
 	SendKeysAction,
 	StructuredOutputAction,
+	WaitAction,
 	WaitForUserInputAction,
 )
 from core.helpers import create_task_with_error_handling, sanitize_surrogates, time_execution_sync
@@ -55,10 +56,10 @@ logger = logging.getLogger(__name__)
 
 # Импортируем EnhancedDOMTreeNode и пересобираем модели событий с прямыми ссылками на него
 # Это должно быть сделано после завершения всех импортов
-ClickElementEvent.model_rebuild()
-TypeTextEvent.model_rebuild()
-ScrollEvent.model_rebuild()
-UploadFileEvent.model_rebuild()
+ElementClickRequest.model_rebuild()
+TextInputRequest.model_rebuild()
+PageScrollRequest.model_rebuild()
+FileUploadRequest.model_rebuild()
 
 Context = TypeVar('Context')
 
@@ -84,14 +85,14 @@ def _detect_sensitive_key_name(text: str, sensitive_data: dict[str, str | dict[s
 	return None
 
 
-def handle_browser_error(e: BrowserError) -> ActionResult:
+def handle_browser_error(e: BrowserError) -> ExecutionResult:
 	if e.long_term_memory is not None:
 		if e.short_term_memory is not None:
-			return ActionResult(
+			return ExecutionResult(
 				extracted_content=e.short_term_memory, error=e.long_term_memory, include_extracted_content_only_once=True
 			)
 		else:
-			return ActionResult(error=e.long_term_memory)
+			return ExecutionResult(error=e.long_term_memory)
 	# Возвращаемся к исходной обработке ошибок, если long_term_memory равен None
 	logger.warning(
 		'⚠️ A BrowserError was raised without long_term_memory - always set long_term_memory when raising BrowserError to propagate right messages to LLM.'
@@ -146,13 +147,13 @@ class Tools(Generic[Context]):
 		self._register_handlers_in_registry()
 
 	# Методы-обработчики действий (новый паттерн - отдельные методы вместо декораторов)
-	async def _handle_navigate(self, params: NavigateAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_navigate(self, params: NavigateAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик действия навигации"""
 		try:
 			# ВАЖНО: Принудительно отключаем открытие новых вкладок
 			# LLM иногда решает открыть new_tab=True, что ломает контекст работы
 			# Все навигации должны происходить в текущей вкладке
-			event = browser_session.event_bus.dispatch(NavigateToUrlEvent(url=params.url, new_tab=False))
+			event = browser_session.event_bus.dispatch(UrlNavigationRequest(url=params.url, new_tab=False))
 			await event
 			await event.event_result(raise_if_any=True, raise_if_none=False)
 
@@ -160,7 +161,7 @@ class Tools(Generic[Context]):
 			msg = f'🔗 {memory}'
 
 			logger.info(msg)
-			return ActionResult(extracted_content=msg, long_term_memory=memory)
+			return ExecutionResult(extracted_content=msg, long_term_memory=memory)
 		except Exception as e:
 			error_msg = str(e)
 			# Всегда логируем реальную ошибку сначала для отладки
@@ -169,7 +170,7 @@ class Tools(Generic[Context]):
 			# Проверка на RuntimeError о CDP клиенте
 			if isinstance(e, RuntimeError) and 'CDP client not initialized' in error_msg:
 				browser_session.logger.error('❌ Ошибка подключения браузера - CDP клиент не инициализирован')
-				return ActionResult(error=f'Ошибка подключения браузера: {error_msg}')
+				return ExecutionResult(error=f'Ошибка подключения браузера: {error_msg}')
 			# Проверка на сетевые ошибки
 			elif any(
 				err in error_msg
@@ -183,37 +184,38 @@ class Tools(Generic[Context]):
 			):
 				site_unavailable_msg = f'Навигация не удалась - сайт недоступен: {params.url}'
 				browser_session.logger.warning(f'⚠️ {site_unavailable_msg} - {error_msg}')
-				return ActionResult(error=site_unavailable_msg)
+				return ExecutionResult(error=site_unavailable_msg)
 			else:
-				# Возвращаем ошибку в ActionResult вместо повторного выброса
-				return ActionResult(error=f'Навигация не удалась: {str(e)}')
+				# Возвращаем ошибку в ExecutionResult вместо повторного выброса
+				return ExecutionResult(error=f'Навигация не удалась: {str(e)}')
 
-	async def _handle_go_back(self, _: NoParamsAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_go_back(self, _: NoParamsAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик действия возврата назад"""
 		try:
-			event = browser_session.event_bus.dispatch(GoBackEvent())
+			event = browser_session.event_bus.dispatch(NavigateBackRequest())
 			await event
 			memory = 'Вернулся назад'
 			msg = f'🔙  {memory}'
 			logger.info(msg)
-			return ActionResult(extracted_content=memory)
+			return ExecutionResult(extracted_content=memory)
 		except Exception as e:
-			logger.error(f'Не удалось отправить GoBackEvent: {type(e).__name__}: {e}')
+			logger.error(f'Не удалось отправить NavigateBackRequest: {type(e).__name__}: {e}')
 			error_msg = f'Не удалось вернуться назад: {str(e)}'
-			return ActionResult(error=error_msg)
+			return ExecutionResult(error=error_msg)
 
-	async def _handle_wait(self, seconds: int = 3) -> ActionResult:
+	async def _handle_wait(self, params: WaitAction) -> ExecutionResult:
 		"""Обработчик действия ожидания"""
+		seconds = params.seconds
 		# Ограничиваем время ожидания максимумом в 30 секунд
 		actual_seconds = min(max(seconds - 1, 0), 30)
 		sec_text = 'секунду' if seconds == 1 else ('секунды' if seconds < 5 else 'секунд')
 		memory = f'Ожидание {seconds} {sec_text}'
 		logger.info(f'🕒 ожидание {seconds} {sec_text}')
 		await asyncio.sleep(actual_seconds)
-		return ActionResult(extracted_content=memory, long_term_memory=memory)
+		return ExecutionResult(extracted_content=memory, long_term_memory=memory)
 
 	# Вспомогательная функция для преобразования координат
-	def _convert_llm_coordinates_to_viewport(self, llm_x: int, llm_y: int, browser_session: BrowserSession) -> tuple[int, int]:
+	def _convert_llm_coordinates_to_viewport(self, llm_x: int, llm_y: int, browser_session: ChromeSession) -> tuple[int, int]:
 		"""Преобразует координаты из размера скриншота LLM в исходный размер viewport."""
 		if browser_session.llm_screenshot_size and browser_session._original_viewport_size:
 			original_width, original_height = browser_session._original_viewport_size
@@ -231,11 +233,11 @@ class Tools(Generic[Context]):
 		return llm_x, llm_y
 
 	# Вспомогательные методы для клика
-	async def _click_by_coordinate(self, params: ClickElementAction, browser_session: BrowserSession) -> ActionResult:
+	async def _click_by_coordinate(self, params: ClickElementAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Клик по координатам"""
 		# Убеждаемся, что координаты предоставлены (проверка типов)
 		if params.coordinate_x is None or params.coordinate_y is None:
-			return ActionResult(error='Both coordinate_x and coordinate_y must be provided')
+			return ExecutionResult(error='Both coordinate_x and coordinate_y must be provided')
 
 		try:
 			# Преобразуем координаты из размера LLM в исходный размер viewport, если использовалось изменение размера
@@ -246,9 +248,9 @@ class Tools(Generic[Context]):
 			# Подсвечиваем координату, по которой кликаем (действительно неблокирующая операция)
 			asyncio.create_task(browser_session.highlight_coordinate_click(actual_x, actual_y))
 
-			# Отправляем ClickCoordinateEvent - обработчик проверит безопасность и кликнет
+			# Отправляем CoordinateClickRequest - обработчик проверит безопасность и кликнет
 			event = browser_session.event_bus.dispatch(
-				ClickCoordinateEvent(coordinate_x=actual_x, coordinate_y=actual_y, force=True)
+				CoordinateClickRequest(coordinate_x=actual_x, coordinate_y=actual_y, force=True)
 			)
 			await event
 			# Ждём завершения обработчика и получаем любое исключение или метаданные
@@ -257,13 +259,13 @@ class Tools(Generic[Context]):
 			# Проверяем ошибки валидации (происходит только когда force=False)
 			if isinstance(click_metadata, dict) and 'validation_error' in click_metadata:
 				error_msg = click_metadata['validation_error']
-				return ActionResult(error=error_msg)
+				return ExecutionResult(error=error_msg)
 
 			memory = f'Клик по координатам {params.coordinate_x}, {params.coordinate_y}'
 			msg = f'🖱️ {memory}'
 			logger.info(msg)
 
-			return ActionResult(
+			return ExecutionResult(
 				extracted_content=memory,
 				metadata={'click_x': actual_x, 'click_y': actual_y},
 			)
@@ -271,9 +273,9 @@ class Tools(Generic[Context]):
 			return handle_browser_error(e)
 		except Exception as e:
 			error_msg = f'Не удалось кликнуть по координатам ({params.coordinate_x}, {params.coordinate_y}).'
-			return ActionResult(error=error_msg)
+			return ExecutionResult(error=error_msg)
 
-	async def _click_by_index(self, params: ClickElementAction, browser_session: BrowserSession) -> ActionResult:
+	async def _click_by_index(self, params: ClickElementAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Клик по индексу элемента"""
 		assert params.index is not None
 		try:
@@ -281,14 +283,20 @@ class Tools(Generic[Context]):
 			if params.index < 0:
 				msg = f'Индекс {params.index} невалиден. Индексы должны быть >= 0.'
 				logger.warning(f'⚠️ {msg}')
-				return ActionResult(extracted_content=msg)
+				return ExecutionResult(extracted_content=msg)
 
 			# Поиск узла в карте селекторов
+			logger.debug(f'Looking for element with index {params.index}')
 			node = await browser_session.get_element_by_index(params.index)
 			if node is None:
+				# Получаем selector_map для отладки
+				selector_map = await browser_session.get_selector_map()
+				available_indices = list(selector_map.keys())[:20] if selector_map else []
 				msg = f'Элемент с индексом {params.index} недоступен - страница могла измениться. Попробуйте обновить состояние браузера.'
 				logger.warning(f'⚠️ {msg}')
-				return ActionResult(extracted_content=msg)
+				logger.debug(f'Available indices (first 20): {available_indices}')
+				return ExecutionResult(extracted_content=msg)
+			logger.debug(f'Found node: {node.node_name}, backend_node_id={node.backend_node_id}')
 
 			# Получение описания кликнутого элемента
 			element_desc = get_click_description(node)
@@ -298,10 +306,12 @@ class Tools(Generic[Context]):
 				browser_session.highlight_interaction_element(node), name='highlight_click_element', suppress_exceptions=True
 			)
 
-			event = browser_session.event_bus.dispatch(ClickElementEvent(node=node))
+			logger.debug(f'Dispatching ElementClickRequest for index {params.index}, node={node.node_name}')
+			event = browser_session.event_bus.dispatch(ElementClickRequest(node=node))
 			await event
 			# Ждём завершения обработчика и получаем любое исключение или метаданные
 			click_metadata = await event.event_result(raise_if_any=True, raise_if_none=False)
+			logger.debug(f'Click completed, metadata={click_metadata}')
 
 			# Проверка на ошибку валидации (например, попытка кликнуть на <select> или file input)
 			if isinstance(click_metadata, dict) and 'validation_error' in click_metadata:
@@ -316,14 +326,14 @@ class Tools(Generic[Context]):
 						logger.debug(
 							f'Failed to get dropdown options as shortcut during click on dropdown: {type(dropdown_error).__name__}: {dropdown_error}'
 						)
-				return ActionResult(error=error_msg)
+				return ExecutionResult(error=error_msg)
 
 			# Формирование памяти с информацией об элементе
 			memory = f'Клик по {element_desc}'
 			logger.info(f'🖱️ {memory}')
 
 			# Включаем координаты клика в метаданные, если доступны
-			return ActionResult(
+			return ExecutionResult(
 				extracted_content=memory,
 				metadata=click_metadata if isinstance(click_metadata, dict) else None,
 			)
@@ -331,13 +341,13 @@ class Tools(Generic[Context]):
 			return handle_browser_error(e)
 		except Exception as e:
 			error_msg = f'Не удалось кликнуть на элемент {params.index}: {str(e)}'
-			return ActionResult(error=error_msg)
+			return ExecutionResult(error=error_msg)
 
-	async def _handle_click(self, params: ClickElementAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_click(self, params: ClickElementAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик действия клика"""
 		# Проверяем, что предоставлен либо индекс, либо координаты
 		if params.index is None and (params.coordinate_x is None or params.coordinate_y is None):
-			return ActionResult(error='Must provide either index or both coordinate_x and coordinate_y')
+			return ExecutionResult(error='Must provide either index or both coordinate_x and coordinate_y')
 
 		# Пробуем клик по индексу сначала, если индекс предоставлен
 		if params.index is not None:
@@ -349,17 +359,17 @@ class Tools(Generic[Context]):
 	async def _handle_input(
 		self,
 		params: InputTextAction,
-		browser_session: BrowserSession,
+		browser_session: ChromeSession,
 		has_sensitive_data: bool = False,
 		sensitive_data: dict[str, str | dict[str, str]] | None = None,
-	) -> ActionResult:
+	) -> ExecutionResult:
 		"""Обработчик действия ввода текста"""
 		# Поиск узла в карте селекторов
 		node = await browser_session.get_element_by_index(params.index)
 		if node is None:
 			msg = f'Элемент с индексом {params.index} недоступен - страница могла измениться. Попробуйте обновить состояние браузера.'
 			logger.warning(f'⚠️ {msg}')
-			return ActionResult(extracted_content=msg)
+			return ExecutionResult(extracted_content=msg)
 
 		# Подсветка элемента, в который вводят (неблокирующая)
 		create_task_with_error_handling(
@@ -374,7 +384,7 @@ class Tools(Generic[Context]):
 				sensitive_key_name = _detect_sensitive_key_name(params.text, sensitive_data)
 
 			event = browser_session.event_bus.dispatch(
-				TypeTextEvent(
+				TextInputRequest(
 					node=node,
 					text=params.text,
 					clear=params.clear,
@@ -403,7 +413,7 @@ class Tools(Generic[Context]):
 			# Это особенно полезно для полей поиска, где кнопка поиска может быть неточно определена
 			if params.press_enter:
 				try:
-					enter_event = browser_session.event_bus.dispatch(SendKeysEvent(keys='Enter'))
+					enter_event = browser_session.event_bus.dispatch(KeyboardInputRequest(keys='Enter'))
 					await enter_event
 					await enter_event.event_result(raise_if_any=True, raise_if_none=False)
 					msg += ' и нажат Enter'
@@ -412,7 +422,7 @@ class Tools(Generic[Context]):
 					logger.warning(f'Не удалось нажать Enter: {e}')
 
 			# Включаем координаты ввода в метаданные, если доступны
-			return ActionResult(
+			return ExecutionResult(
 				extracted_content=msg,
 				long_term_memory=msg,
 				metadata=input_metadata if isinstance(input_metadata, dict) else None,
@@ -421,17 +431,17 @@ class Tools(Generic[Context]):
 			return handle_browser_error(e)
 		except Exception as e:
 			# Логирование полной ошибки для отладки
-			logger.error(f'Не удалось отправить TypeTextEvent: {type(e).__name__}: {e}')
+			logger.error(f'Не удалось отправить TextInputRequest: {type(e).__name__}: {e}')
 			error_msg = f'Не удалось ввести текст в элемент {params.index}: {e}'
-			return ActionResult(error=error_msg)
+			return ExecutionResult(error=error_msg)
 
 
 	async def _handle_extract(
 		self,
 		params: ExtractAction,
-		browser_session: BrowserSession,
+		browser_session: ChromeSession,
 		page_extraction_llm: BaseChatModel,
-	) -> ActionResult:
+	) -> ExecutionResult:
 		"""Обработчик действия извлечения данных"""
 		# Константы конфигурации
 		MAXIMUM_CHARACTER_LIMIT = 30000
@@ -456,7 +466,7 @@ class Tools(Generic[Context]):
 		# Обработка смещения символов, если указано
 		if character_offset > 0:
 			if character_offset >= len(markdown_content):
-				return ActionResult(
+				return ExecutionResult(
 					error=f'start_from_char ({character_offset}) превышает длину контента {filtered_content_length} символов.'
 				)
 			markdown_content = markdown_content[character_offset:]
@@ -552,7 +562,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 				should_include_only_once = True
 
 			logger.info(f'📄 {memory_content}')
-			return ActionResult(
+			return ExecutionResult(
 				extracted_content=formatted_extracted_content,
 				include_extracted_content_only_once=should_include_only_once,
 				long_term_memory=memory_content,
@@ -565,31 +575,31 @@ You will be given a query and the markdown of a webpage that has been filtered t
 		"""Регистрирует обработчики из словаря в registry для совместимости"""
 		# Навигация
 		@self.registry.action('Переход на URL.', param_model=NavigateAction)
-		async def navigate(params: NavigateAction, browser_session: BrowserSession):
+		async def navigate(params: NavigateAction, browser_session: ChromeSession):
 			return await self._action_handlers['navigate'](params, browser_session)
 
 		@self.registry.action('Возврат на предыдущую страницу.', param_model=NoParamsAction)
-		async def go_back(_: NoParamsAction, browser_session: BrowserSession):
+		async def go_back(_: NoParamsAction, browser_session: ChromeSession):
 			return await self._action_handlers['go_back'](_, browser_session)
 
 		# Ожидание
-		@self.registry.action('Ожидание в секундах.', param_model=NoParamsAction)
-		async def wait(seconds: int = 3):
-			return await self._action_handlers['wait'](seconds)
+		@self.registry.action('Ожидание в секундах.', param_model=WaitAction)
+		async def wait(params: WaitAction):
+			return await self._action_handlers['wait'](params)
 
 		# Клик
 		@self.registry.action('Клик по элементу.', param_model=ClickElementAction)
-		async def click(params: ClickElementAction, browser_session: BrowserSession):
+		async def click(params: ClickElementAction, browser_session: ChromeSession):
 			return await self._action_handlers['click'](params, browser_session)
 
 		# Ввод текста
 		@self.registry.action('Ввод текста в поле.', param_model=InputTextAction)
-		async def input(params: InputTextAction, browser_session: BrowserSession):
+		async def input(params: InputTextAction, browser_session: ChromeSession):
 			return await self._action_handlers['input'](params, browser_session)
 
 		# Извлечение
 		@self.registry.action('', param_model=ExtractAction)
-		async def extract(params: ExtractAction, browser_session: BrowserSession, page_extraction_llm: BaseChatModel):
+		async def extract(params: ExtractAction, browser_session: ChromeSession, page_extraction_llm: BaseChatModel):
 			return await self._action_handlers['extract'](params, browser_session, page_extraction_llm)
 
 		# Прокрутка
@@ -597,10 +607,10 @@ You will be given a query and the markdown of a webpage that has been filtered t
 			"""Прокрутка по страницам. ОБЯЗАТЕЛЬНО: down=True/False (True=вниз, False=вверх, по умолчанию=True). Опционально: pages=0.5-10.0 (по умолчанию 1.0). Используйте index для контейнеров прокрутки (выпадающие списки/кастомный UI). Большое количество страниц (10) достигает низа. Многостраничная прокрутка последовательно. Высота на основе viewport, резерв 1000px/страница.""",
 			param_model=ScrollAction,
 		)
-		async def scroll(params: ScrollAction, browser_session: BrowserSession):
+		async def scroll(params: ScrollAction, browser_session: ChromeSession):
 			result = await self._handle_scroll(params, browser_session)
 			if result.extracted_content:
-				logger.info(f'🔍 {result.extracted_content}')
+				logger.debug(f'{result.extracted_content}')
 			return result
 
 		# Клик по тексту
@@ -608,7 +618,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 			'Клик по видимому тексту на странице. Используйте когда элемент не имеет индекса в DOM, но текст виден на скриншоте (например, кнопка "Откликнуться", "Submit").',
 			param_model=ClickTextAction,
 		)
-		async def click_text(params: ClickTextAction, browser_session: BrowserSession):
+		async def click_text(params: ClickTextAction, browser_session: ChromeSession):
 			return await self._handle_click_text(params, browser_session)
 
 		# Клик по роли
@@ -616,17 +626,17 @@ You will be given a query and the markdown of a webpage that has been filtered t
 			'Клик по элементу с ARIA ролью (button, link, menuitem). Используйте когда элемент не имеет индекса, но известна его роль и имя.',
 			param_model=ClickRoleAction,
 		)
-		async def click_role(params: ClickRoleAction, browser_session: BrowserSession):
+		async def click_role(params: ClickRoleAction, browser_session: ChromeSession):
 			return await self._handle_click_role(params, browser_session)
 
 		# Отправка клавиш
 		@self.registry.action('Отправка клавиш.', param_model=SendKeysAction)
-		async def send_keys(params: SendKeysAction, browser_session: BrowserSession):
+		async def send_keys(params: SendKeysAction, browser_session: ChromeSession):
 			return await self._handle_send_keys(params, browser_session)
 
 		# Поиск текста
 		@self.registry.action('Прокрутка к тексту.')
-		async def find_text(text: str, browser_session: BrowserSession):  # type: ignore
+		async def find_text(text: str, browser_session: ChromeSession):  # type: ignore
 			return await self._handle_find_text(text, browser_session)
 
 		# Запрос пользовательского ввода
@@ -634,7 +644,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 			'Запросить ввод от пользователя. Используется для решения капчи или других действий, требующих вмешательства пользователя.',
 			param_model=RequestUserInputAction,
 		)
-		async def request_user_input(params: RequestUserInputAction, browser_session: BrowserSession):
+		async def request_user_input(params: RequestUserInputAction, browser_session: ChromeSession):
 			return await self._handle_request_user_input(params, browser_session)
 
 		# Ожидание пользовательского ввода
@@ -642,17 +652,17 @@ You will be given a query and the markdown of a webpage that has been filtered t
 			'Ожидание ввода данных от пользователя в браузере. Используется для форм входа/регистрации, чтобы чувствительные данные (пароли, личная информация) не проходили через LLM чат. Пользователь заполнит форму вручную в браузере и введет "готово" когда закончит.',
 			param_model=WaitForUserInputAction,
 		)
-		async def wait_for_user_input(params: WaitForUserInputAction, browser_session: BrowserSession):
+		async def wait_for_user_input(params: WaitForUserInputAction, browser_session: ChromeSession):
 			return await self._handle_wait_for_user_input(params, browser_session)
 
 		# Опции выпадающего списка
 		@self.registry.action('', param_model=GetDropdownOptionsAction)
-		async def dropdown_options(params: GetDropdownOptionsAction, browser_session: BrowserSession):
+		async def dropdown_options(params: GetDropdownOptionsAction, browser_session: ChromeSession):
 			return await self._handle_dropdown_options(params, browser_session)
 
 		# Выбор опции выпадающего списка
 		@self.registry.action('Установить опцию элемента <select>.', param_model=SelectDropdownOptionAction)
-		async def select_dropdown(params: SelectDropdownOptionAction, browser_session: BrowserSession):
+		async def select_dropdown(params: SelectDropdownOptionAction, browser_session: ChromeSession):
 			return await self._handle_select_dropdown(params, browser_session)
 
 		# Скриншот
@@ -660,10 +670,10 @@ You will be given a query and the markdown of a webpage that has been filtered t
 			'Получить скриншот текущего viewport. Используйте когда: нужна визуальная проверка, неясная компоновка, неопределенные позиции элементов, отладка проблем UI, или проверка состояния страницы. Скриншот включен в следующее состояние_браузера. Параметры не нужны.',
 			param_model=NoParamsAction,
 		)
-		async def screenshot(_: NoParamsAction, browser_session: BrowserSession):
+		async def screenshot(_: NoParamsAction, browser_session: ChromeSession):
 			return await self._handle_screenshot(_, browser_session)
 
-	async def _handle_scroll(self, params: ScrollAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_scroll(self, params: ScrollAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик действия прокрутки"""
 		try:
 			# Resolve target element from selector map if index provided
@@ -674,7 +684,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 				if scroll_target_node is None:
 					# Element does not exist
 					error_message = f'Элемент с индексом {params.index} не найден в состоянии браузера'
-					return ActionResult(error=error_message)
+					return ExecutionResult(error=error_message)
 
 			scroll_direction = 'down' if params.down else 'up'
 			scroll_target_description = f'element {params.index}' if params.index is not None and params.index != 0 else ''
@@ -711,7 +721,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 							scroll_pixel_amount = -scroll_pixel_amount
 
 						scroll_event = browser_session.event_bus.dispatch(
-							ScrollEvent(direction=scroll_direction, amount=abs(scroll_pixel_amount), node=scroll_target_node)
+							PageScrollRequest(direction=scroll_direction, amount=abs(scroll_pixel_amount), node=scroll_target_node)
 						)
 						await scroll_event
 						await scroll_event.event_result(raise_if_any=True, raise_if_none=False)
@@ -732,7 +742,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 							fractional_pixels = -fractional_pixels
 
 						fractional_scroll_event = browser_session.event_bus.dispatch(
-							ScrollEvent(direction=scroll_direction, amount=abs(fractional_pixels), node=scroll_target_node)
+							PageScrollRequest(direction=scroll_direction, amount=abs(fractional_pixels), node=scroll_target_node)
 						)
 						await fractional_scroll_event
 						await fractional_scroll_event.event_result(raise_if_any=True, raise_if_none=False)
@@ -752,20 +762,20 @@ You will be given a query and the markdown of a webpage that has been filtered t
 				# For fractional pages <1.0, execute single scroll operation
 				single_scroll_pixels = int(params.pages * calculated_viewport_height)
 				single_scroll_event = browser_session.event_bus.dispatch(
-					ScrollEvent(direction='down' if params.down else 'up', amount=single_scroll_pixels, node=scroll_target_node)
+					PageScrollRequest(direction='down' if params.down else 'up', amount=single_scroll_pixels, node=scroll_target_node)
 				)
 				await single_scroll_event
 				await single_scroll_event.event_result(raise_if_any=True, raise_if_none=False)
 				direction_text = 'вниз' if scroll_direction == 'down' else 'вверх'
 				memory_text = f'Прокручено {direction_text} {scroll_target_description} {params.pages} страниц'.replace('  ', ' ')
 
-			return ActionResult(long_term_memory=memory_text)
+			return ExecutionResult(long_term_memory=memory_text)
 
 		except Exception as e:
 			logger.error(f'Ошибка при прокрутке: {e}')
-			return ActionResult(error=str(e))
+			return ExecutionResult(error=str(e))
 
-	async def _handle_click_text(self, params: ClickTextAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_click_text(self, params: ClickTextAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик клика по тексту"""
 		try:
 			script = """
@@ -808,24 +818,25 @@ You will be given a query and the markdown of a webpage that has been filtered t
 				params={
 					'expression': f'({script})("{params.text}", {str(params.exact).lower()})',
 					'returnByValue': True,
-				}
+				},
+				session_id=cdp_session.session_id,
 			)
 			
 			value = result.get('result', {}).get('value', 'error')
 			if value == 'not_found':
 				msg = f"Текст '{params.text}' не найден на странице"
 				logger.warning(msg)
-				return ActionResult(extracted_content=msg)
+				return ExecutionResult(extracted_content=msg)
 			
 			msg = f"🖱️ click_text: {value}"
 			logger.info(msg)
-			return ActionResult(extracted_content=msg)
+			return ExecutionResult(extracted_content=msg)
 		except Exception as e:
 			msg = f"Ошибка click_text: {e}"
 			logger.error(msg)
-			return ActionResult(error=msg)
+			return ExecutionResult(error=msg)
 
-	async def _handle_click_role(self, params: ClickRoleAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_click_role(self, params: ClickRoleAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик клика по роли"""
 		try:
 			role = params.role.lower()
@@ -873,56 +884,57 @@ You will be given a query and the markdown of a webpage that has been filtered t
 				params={
 					'expression': f'({script})("{role}", "{name}", {str(params.exact).lower()})',
 					'returnByValue': True,
-				}
+				},
+				session_id=cdp_session.session_id,
 			)
 			
 			value = result.get('result', {}).get('value', 'error')
 			if value == 'not_found':
 				msg = f"Элемент с ролью '{role}' и именем '{name}' не найден"
 				logger.warning(msg)
-				return ActionResult(extracted_content=msg)
+				return ExecutionResult(extracted_content=msg)
 			
 			msg = f"🖱️ click_role: {value}"
 			logger.info(msg)
-			return ActionResult(extracted_content=msg)
+			return ExecutionResult(extracted_content=msg)
 		except Exception as e:
 			msg = f"Ошибка click_role: {e}"
 			logger.error(msg)
-			return ActionResult(error=msg)
+			return ExecutionResult(error=msg)
 
-	async def _handle_send_keys(self, params: SendKeysAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_send_keys(self, params: SendKeysAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик отправки клавиш"""
 		try:
-			event = browser_session.event_bus.dispatch(SendKeysEvent(keys=params.keys))
+			event = browser_session.event_bus.dispatch(KeyboardInputRequest(keys=params.keys))
 			await event
 			await event.event_result(raise_if_any=True, raise_if_none=False)
 			memory = f'Отправлены клавиши: {params.keys}'
 			msg = f'⌨️  {memory}'
 			logger.info(msg)
-			return ActionResult(extracted_content=memory, long_term_memory=memory)
+			return ExecutionResult(extracted_content=memory, long_term_memory=memory)
 		except Exception as e:
-			logger.error(f'Не удалось отправить SendKeysEvent: {type(e).__name__}: {e}')
+			logger.error(f'Не удалось отправить KeyboardInputRequest: {type(e).__name__}: {e}')
 			error_msg = f'Не удалось отправить клавиши: {str(e)}'
-			return ActionResult(error=error_msg)
+			return ExecutionResult(error=error_msg)
 
-	async def _handle_find_text(self, text: str, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_find_text(self, text: str, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик поиска текста"""
-		event = browser_session.event_bus.dispatch(ScrollToTextEvent(text=text))
+		event = browser_session.event_bus.dispatch(ScrollToTextRequest(text=text))
 		try:
 			await event.event_result(raise_if_any=True, raise_if_none=False)
 			memory = f'Прокручено к тексту: {text}'
 			msg = f'🔍  {memory}'
 			logger.info(msg)
-			return ActionResult(extracted_content=memory, long_term_memory=memory)
+			return ExecutionResult(extracted_content=memory, long_term_memory=memory)
 		except Exception as e:
 			msg = f"Текст '{text}' не найден или не виден на странице"
 			logger.info(msg)
-			return ActionResult(
+			return ExecutionResult(
 				extracted_content=msg,
 				long_term_memory=f"Попытка прокрутки к тексту '{text}' не удалась - текст не найден",
 			)
 
-	async def _handle_request_user_input(self, params: RequestUserInputAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_request_user_input(self, params: RequestUserInputAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик запроса пользовательского ввода"""
 		prompt_lower = params.prompt.lower()
 		is_yes_no_prompt = ('да' in prompt_lower or 'yes' in prompt_lower) and ('нет' in prompt_lower or 'no' in prompt_lower)
@@ -941,14 +953,14 @@ You will be given a query and the markdown of a webpage that has been filtered t
 		
 		answer_lower = answer.strip().lower()
 		if answer_lower in ['done', 'готово', 'yes', 'да']:
-			return ActionResult(
+			return ExecutionResult(
 				extracted_content='Пользователь подтвердил: действие выполнено (например, капча решена). Продолжаем выполнение задачи.',
 				long_term_memory='Пользователь решил капчу или выполнил требуемое действие',
 			)
 		
-		return ActionResult(extracted_content=answer)
+		return ExecutionResult(extracted_content=answer)
 
-	async def _handle_wait_for_user_input(self, params: WaitForUserInputAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_wait_for_user_input(self, params: WaitForUserInputAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик ожидания пользовательского ввода"""
 		msg = params.message or "Пожалуйста, заполните форму в браузере (логин, пароль и т.д.)"
 		
@@ -963,46 +975,46 @@ You will be given a query and the markdown of a webpage that has been filtered t
 		
 		answer_lower = answer.strip().lower()
 		if answer_lower not in ['готово', 'done', 'yes', 'да']:
-			return ActionResult(
+			return ExecutionResult(
 				error=f'Неверный ответ: ожидалось "готово" или "done", получено: {answer}'
 			)
 		
-		return ActionResult(
+		return ExecutionResult(
 			extracted_content='Пользователь подтвердил, что закончил ввод данных. Продолжаем выполнение задачи.',
 			long_term_memory='Пользователь заполнил форму входа/регистрации в браузере',
 		)
 
-	async def _handle_dropdown_options(self, params: GetDropdownOptionsAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_dropdown_options(self, params: GetDropdownOptionsAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик получения опций выпадающего списка"""
 		node = await browser_session.get_element_by_index(params.index)
 		if node is None:
 			msg = f'Элемент с индексом {params.index} недоступен - страница могла измениться. Попробуйте обновить состояние браузера.'
 			logger.warning(f'⚠️ {msg}')
-			return ActionResult(extracted_content=msg)
+			return ExecutionResult(extracted_content=msg)
 
-		event = browser_session.event_bus.dispatch(GetDropdownOptionsEvent(node=node))
+		event = browser_session.event_bus.dispatch(DropdownOptionsRequest(node=node))
 		dropdown_data = await event.event_result(timeout=3.0, raise_if_none=True, raise_if_any=True)
 
 		if not dropdown_data:
 			raise ValueError('Не удалось получить опции выпадающего списка - данные не возвращены')
 
-		return ActionResult(
+		return ExecutionResult(
 			extracted_content=dropdown_data['short_term_memory'],
 			long_term_memory=dropdown_data['long_term_memory'],
 			include_extracted_content_only_once=True,
 		)
 
-	async def _handle_select_dropdown(self, params: SelectDropdownOptionAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_select_dropdown(self, params: SelectDropdownOptionAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик выбора опции выпадающего списка"""
 		node = await browser_session.get_element_by_index(params.index)
 		if node is None:
 			msg = f'Элемент с индексом {params.index} недоступен - страница могла измениться. Попробуйте обновить состояние браузера.'
 			logger.warning(f'⚠️ {msg}')
-			return ActionResult(extracted_content=msg)
+			return ExecutionResult(extracted_content=msg)
 
-		from core.session.events import SelectDropdownOptionEvent
+		from core.session.events import DropdownSelectRequest
 
-		event = browser_session.event_bus.dispatch(SelectDropdownOptionEvent(node=node, text=params.text))
+		event = browser_session.event_bus.dispatch(DropdownSelectRequest(node=node, text=params.text))
 		selection_data = await event.event_result()
 
 		if not selection_data:
@@ -1010,29 +1022,29 @@ You will be given a query and the markdown of a webpage that has been filtered t
 
 		if selection_data.get('success') == 'true':
 			msg = selection_data.get('message', f'Выбрана опция: {params.text}')
-			return ActionResult(
+			return ExecutionResult(
 				extracted_content=msg,
 				include_in_memory=True,
 				long_term_memory=f"Выбрана опция выпадающего списка '{params.text}' с индексом {params.index}",
 			)
 		else:
 			if 'short_term_memory' in selection_data and 'long_term_memory' in selection_data:
-				return ActionResult(
+				return ExecutionResult(
 					extracted_content=selection_data['short_term_memory'],
 					long_term_memory=selection_data['long_term_memory'],
 					include_extracted_content_only_once=True,
 				)
 			else:
 				error_msg = selection_data.get('error', f'Не удалось выбрать опцию: {params.text}')
-				return ActionResult(error=error_msg)
+				return ExecutionResult(error=error_msg)
 
-	async def _handle_screenshot(self, _: NoParamsAction, browser_session: BrowserSession) -> ActionResult:
+	async def _handle_screenshot(self, _: NoParamsAction, browser_session: ChromeSession) -> ExecutionResult:
 		"""Обработчик запроса скриншота"""
 		memory = 'Запрошен скриншот для следующего наблюдения'
 		msg = f'📸 {memory}'
 		logger.info(msg)
 
-		return ActionResult(
+		return ExecutionResult(
 			extracted_content=memory,
 			metadata={'include_screenshot': True},
 		)
@@ -1050,7 +1062,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 				# Use mode='json' to properly serialize enums at all nesting levels
 				output_dict = params.data.model_dump(mode='json')
 
-				return ActionResult(
+				return ExecutionResult(
 					is_done=True,
 					success=params.success,
 					extracted_content=json.dumps(output_dict, ensure_ascii=False),
@@ -1074,7 +1086,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 
 				attachments = []
 
-				return ActionResult(
+				return ExecutionResult(
 					is_done=True,
 					success=params.success,
 					extracted_content=user_message,
@@ -1115,13 +1127,13 @@ You will be given a query and the markdown of a webpage that has been filtered t
 	@time_execution_sync('--act')
 	async def act(
 		self,
-		action: ActionModel,
-		browser_session: BrowserSession,
+		action: CommandModel,
+		browser_session: ChromeSession,
 		page_extraction_llm: BaseChatModel | None = None,
 		sensitive_data: dict[str, str | dict[str, str]] | None = None,
 		available_file_paths: list[str] | None = None,
 		file_system: Any | None = None,
-	) -> ActionResult:
+	) -> ExecutionResult:
 		"""Execute an action"""
 
 		for action_name, params in action.model_dump(exclude_unset=True).items():
@@ -1158,24 +1170,24 @@ You will be given a query and the markdown of a webpage that has been filtered t
 						result = handle_browser_error(e)
 					except TimeoutError as e:
 						logger.error(f'❌ Action {action_name} failed with TimeoutError: {str(e)}')
-						result = ActionResult(error=f'{action_name} was not executed due to timeout.')
+						result = ExecutionResult(error=f'{action_name} was not executed due to timeout.')
 					except Exception as e:
 						# Log the original exception with traceback for observability
 						logger.error(f"Action '{action_name}' failed with error: {str(e)}")
-						result = ActionResult(error=str(e))
+						result = ExecutionResult(error=str(e))
 
 					if Laminar is not None:
 						Laminar.set_span_output(result)
 
 				if isinstance(result, str):
-					return ActionResult(extracted_content=result)
-				elif isinstance(result, ActionResult):
+					return ExecutionResult(extracted_content=result)
+				elif isinstance(result, ExecutionResult):
 					return result
 				elif result is None:
-					return ActionResult()
+					return ExecutionResult()
 				else:
 					raise ValueError(f'Invalid action result type: {type(result)} of {result}')
-		return ActionResult()
+		return ExecutionResult()
 
 	def __getattr__(self, name: str):
 		"""
@@ -1213,16 +1225,16 @@ You will be given a query and the markdown of a webpage that has been filtered t
 				# Create the param instance
 				params_instance = action.param_model(**action_params)
 
-				# Dynamically create an ActionModel with this action
+				# Dynamically create an CommandModel with this action
 				# Use Union for type compatibility with create_model
-				DynamicActionModel = create_model(
-					'DynamicActionModel',
-					__base__=ActionModel,
+				DynamicCommandModel = create_model(
+					'DynamicCommandModel',
+					__base__=CommandModel,
 					**{name: (Union[action.param_model, None], None)},  # type: ignore
 				)
 
 				# Create the action model instance
-				action_model = DynamicActionModel(**{name: params_instance})
+				action_model = DynamicCommandModel(**{name: params_instance})
 
 				# Call act() which has all the error handling, result normalization, and observability
 				# browser_session is passed as positional argument (required by act())

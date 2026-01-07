@@ -18,7 +18,7 @@ from core.dom_processing.models import DEFAULT_INCLUDE_ATTRIBUTES, DOMInteracted
 
 from core.ai_models.models import BaseChatModel
 from core.pricing.models import UsageSummary
-from core.actions.registry.models import ActionModel
+from core.actions.registry.models import CommandModel
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class AgentSettings(BaseModel):
 	vision_detail_level: Literal['auto', 'high', 'low'] = 'auto'
 
 
-class AgentState(BaseModel):
+class OrchestratorState(BaseModel):
 	"""Содержит всю информацию о состоянии агента"""
 
 	model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -57,9 +57,9 @@ class AgentState(BaseModel):
 	agent_id: str = Field(default_factory=uuid7str)
 	consecutive_failures: int = 0
 	follow_up_task: bool = False  # Отслеживать, является ли агент задачей-продолжением
-	last_model_output: AgentOutput | None = None
+	last_model_output: StepDecision | None = None
 	last_plan: str | None = None
-	last_result: list[ActionResult] | None = None
+	last_result: list[ExecutionResult] | None = None
 	modal_click_failures: int = 0  # Счётчик неудачных попыток клика в модальном окне
 	n_steps: int = 1
 
@@ -73,7 +73,7 @@ class AgentState(BaseModel):
 
 
 @dataclass
-class AgentStepInfo:
+class StepContext:
 	max_steps: int
 	step_number: int
 
@@ -101,7 +101,7 @@ class JudgementResult(BaseModel):
 	verdict: bool = Field(description='Была ли трассировка успешной или нет')
 
 
-class ActionResult(BaseModel):
+class ExecutionResult(BaseModel):
 	"""Результат выполнения действия"""
 
 	# Для действия done
@@ -177,10 +177,10 @@ class AgentBrain(BaseModel):
 	thinking: str | None = None
 
 
-class AgentOutput(BaseModel):
+class StepDecision(BaseModel):
 	model_config = ConfigDict(arbitrary_types_allowed=True, extra='forbid')
 
-	action: list[ActionModel] = Field(
+	action: list[CommandModel] = Field(
 		...,
 		json_schema_extra={'min_items': 1},  # Убедиться, что предоставлено хотя бы одно действие
 	)
@@ -206,25 +206,25 @@ class AgentOutput(BaseModel):
 		)
 
 	@staticmethod
-	def type_with_custom_actions(custom_actions: type[ActionModel]) -> type[AgentOutput]:
+	def type_with_custom_actions(custom_actions: type[CommandModel]) -> type[StepDecision]:
 		"""Расширить действия пользовательскими действиями"""
 
 		model_ = create_model(
-			'AgentOutput',
-			__base__=AgentOutput,
+			'StepDecision',
+			__base__=StepDecision,
 			action=(
 				list[custom_actions],  # type: ignore
 				Field(..., description='Список действий для выполнения', json_schema_extra={'min_items': 1}),
 			),
-			__module__=AgentOutput.__module__,
+			__module__=StepDecision.__module__,
 		)
 		return model_
 
 	@staticmethod
-	def type_with_custom_actions_no_thinking(custom_actions: type[ActionModel]) -> type[AgentOutput]:
+	def type_with_custom_actions_no_thinking(custom_actions: type[CommandModel]) -> type[StepDecision]:
 		"""Расширить действия пользовательскими действиями и исключить поле thinking"""
 
-		class AgentOutputNoThinking(AgentOutput):
+		class StepDecisionNoThinking(StepDecision):
 			@classmethod
 			def model_json_schema(cls, **kwargs):
 				schema = super().model_json_schema(**kwargs)
@@ -233,22 +233,22 @@ class AgentOutput(BaseModel):
 				return schema
 
 		model = create_model(
-			'AgentOutput',
-			__base__=AgentOutputNoThinking,
+			'StepDecision',
+			__base__=StepDecisionNoThinking,
 			action=(
 				list[custom_actions],  # type: ignore
 				Field(..., json_schema_extra={'min_items': 1}),
 			),
-			__module__=AgentOutputNoThinking.__module__,
+			__module__=StepDecisionNoThinking.__module__,
 		)
 
 		return model
 
 	@staticmethod
-	def type_with_custom_actions_flash_mode(custom_actions: type[ActionModel]) -> type[AgentOutput]:
+	def type_with_custom_actions_flash_mode(custom_actions: type[CommandModel]) -> type[StepDecision]:
 		"""Расширить действия пользовательскими действиями для flash mode - только поля memory и action"""
 
-		class AgentOutputFlashMode(AgentOutput):
+		class StepDecisionFlashMode(StepDecision):
 			@classmethod
 			def model_json_schema(cls, **kwargs):
 				schema = super().model_json_schema(**kwargs)
@@ -261,31 +261,31 @@ class AgentOutput(BaseModel):
 				return schema
 
 		model = create_model(
-			'AgentOutput',
-			__base__=AgentOutputFlashMode,
+			'StepDecision',
+			__base__=StepDecisionFlashMode,
 			action=(
 				list[custom_actions],  # type: ignore
 				Field(..., json_schema_extra={'min_items': 1}),
 			),
-			__module__=AgentOutputFlashMode.__module__,
+			__module__=StepDecisionFlashMode.__module__,
 		)
 
 		return model
 
 
-class AgentHistory(BaseModel):
+class ExecutionHistory(BaseModel):
 	"""Элемент истории для действий агента"""
 
 	model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
 
 	metadata: StepMetadata | None = None
-	model_output: AgentOutput | None
-	result: list[ActionResult]
+	model_output: StepDecision | None
+	result: list[ExecutionResult]
 	state: BrowserStateHistory
 	state_message: str | None = None
 
 	@staticmethod
-	def get_interacted_element(model_output: AgentOutput, selector_map: DOMSelectorMap) -> list[DOMInteractedElement | None]:
+	def get_interacted_element(model_output: StepDecision, selector_map: DOMSelectorMap) -> list[DOMInteractedElement | None]:
 		elements = []
 		for action in model_output.action:
 			index = action.get_index()
@@ -376,7 +376,7 @@ class AgentHistory(BaseModel):
 			if self.model_output.thinking is not None:
 				model_output_dump['thinking'] = self.model_output.thinking
 
-		# Обработать сериализацию результатов - не фильтровать данные ActionResult
+		# Обработать сериализацию результатов - не фильтровать данные ExecutionResult
 		# так как они должны содержать значимую информацию для агента
 		result_dump = [r.model_dump(exclude_none=True, mode='json') for r in self.result]
 
@@ -392,12 +392,12 @@ class AgentHistory(BaseModel):
 AgentStructuredOutput = TypeVar('AgentStructuredOutput', bound=BaseModel)
 
 
-class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
-	"""Список сообщений AgentHistory, т.е. история действий и мыслей агента."""
+class ExecutionHistoryList(BaseModel, Generic[AgentStructuredOutput]):
+	"""Список сообщений ExecutionHistory, т.е. история действий и мыслей агента."""
 
 	_output_model_schema: type[AgentStructuredOutput] | None = None
 
-	history: list[AgentHistory]
+	history: list[ExecutionHistory]
 	usage: UsageSummary | None = None
 
 	def total_duration_seconds(self) -> float:
@@ -413,15 +413,15 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 		return len(self.history)
 
 	def __str__(self) -> str:
-		"""Представление объекта AgentHistoryList"""
-		return f'AgentHistoryList(all_model_outputs={self.model_actions()}, all_results={self.action_results()})'
+		"""Представление объекта ExecutionHistoryList"""
+		return f'ExecutionHistoryList(all_model_outputs={self.model_actions()}, all_results={self.action_results()})'
 
-	def add_item(self, history_item: AgentHistory) -> None:
+	def add_item(self, history_item: ExecutionHistory) -> None:
 		"""Добавить элемент истории в список"""
 		self.history.append(history_item)
 
 	def __repr__(self) -> str:
-		"""Представление объекта AgentHistoryList"""
+		"""Представление объекта ExecutionHistoryList"""
 		return self.__str__()
 
 	def save_to_file(self, filepath: str | Path, sensitive_data: dict[str, str | dict[str, str]] | None = None) -> None:
@@ -439,13 +439,13 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 	# 		raise e
 
 	def model_dump(self, **kwargs) -> dict[str, Any]:
-		"""Пользовательская сериализация, которая правильно использует model_dump AgentHistory"""
+		"""Пользовательская сериализация, которая правильно использует model_dump ExecutionHistory"""
 		return {
 			'history': [h.model_dump(**kwargs) for h in self.history],
 		}
 
 	@classmethod
-	def load_from_dict(cls, data: dict[str, Any], output_model: type[AgentOutput]) -> AgentHistoryList:
+	def load_from_dict(cls, data: dict[str, Any], output_model: type[StepDecision]) -> ExecutionHistoryList:
 		# loop through history and validate output_model actions to enrich with custom actions
 		for h in data['history']:
 			if h['model_output']:
@@ -460,7 +460,7 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 		return history
 
 	@classmethod
-	def load_from_file(cls, filepath: str | Path, output_model: type[AgentOutput]) -> AgentHistoryList:
+	def load_from_file(cls, filepath: str | Path, output_model: type[StepDecision]) -> ExecutionHistoryList:
 		"""Load history from JSON file"""
 		with open(filepath, encoding='utf-8') as f:
 			data = json.load(f)
@@ -581,7 +581,7 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 		"""Get all thoughts from history"""
 		return [h.model_output.current_state for h in self.history if h.model_output]
 
-	def model_outputs(self) -> list[AgentOutput]:
+	def model_outputs(self) -> list[StepDecision]:
 		"""Get all model outputs from history"""
 		return [h.model_output for h in self.history if h.model_output]
 
@@ -620,7 +620,7 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 
 		return step_outputs
 
-	def action_results(self) -> list[ActionResult]:
+	def action_results(self) -> list[ExecutionResult]:
 		"""Get all results from history"""
 		results = []
 		for h in self.history:
@@ -654,7 +654,7 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 		"""Format agent history as readable step descriptions for judge evaluation."""
 		steps = []
 
-		# Iterate through history items (each is an AgentHistory)
+		# Iterate through history items (each is an ExecutionHistory)
 		for i, h in enumerate(self.history):
 			step_text = f'Step {i + 1}:\n'
 
@@ -665,7 +665,7 @@ class AgentHistoryList(BaseModel, Generic[AgentStructuredOutput]):
 				action_json = json.dumps(actions_list, indent=1)
 				step_text += f'Actions: {action_json}\n'
 
-			# Get results (already a list[ActionResult] in h.result)
+			# Get results (already a list[ExecutionResult] in h.result)
 			if h.result:
 				for j, result in enumerate(h.result):
 					if result.extracted_content:
@@ -713,7 +713,7 @@ class AgentError:
 
 		# Handle LLM response validation errors from llm_use
 		error_str = str(error)
-		if 'LLM response missing required fields' in error_str or 'Expected format: AgentOutput' in error_str:
+		if 'LLM response missing required fields' in error_str or 'Expected format: StepDecision' in error_str:
 			# Extract the main error message without the huge stacktrace
 			lines = error_str.split('\n')
 			main_error = lines[0] if lines else error_str
@@ -748,7 +748,7 @@ class VariableMetadata(BaseModel):
 
 # ========== Variable Detection Functions ==========
 
-def detect_variables_in_history(history: AgentHistoryList) -> dict[str, DetectedVariable]:
+def detect_variables_in_history(history: ExecutionHistoryList) -> dict[str, DetectedVariable]:
 	"""
 	Анализировать историю агента и обнаружить переиспользуемые переменные.
 

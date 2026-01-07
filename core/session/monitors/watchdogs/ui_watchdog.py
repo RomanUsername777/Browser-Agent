@@ -8,7 +8,7 @@ from pydantic import PrivateAttr
 
 from core.session.events import (
 	BrowserErrorEvent,
-	NavigateToUrlEvent,
+	UrlNavigationRequest,
 	NavigationCompleteEvent,
 	TabCreatedEvent,
 )
@@ -156,7 +156,7 @@ class SecurityWatchdog(BaseWatchdog):
 
 	# Контракты событий
 	LISTENS_TO: ClassVar[list[type[BaseEvent]]] = [
-		NavigateToUrlEvent,
+		UrlNavigationRequest,
 		NavigationCompleteEvent,
 		TabCreatedEvent,
 	]
@@ -164,7 +164,7 @@ class SecurityWatchdog(BaseWatchdog):
 		BrowserErrorEvent,
 	]
 
-	async def on_NavigateToUrlEvent(self, event: NavigateToUrlEvent) -> None:
+	async def on_UrlNavigationRequest(self, event: UrlNavigationRequest) -> None:
 		"""Проверить, разрешен ли URL навигации перед началом навигации."""
 		# Проверка безопасности ПЕРЕД навигацией
 		if not self._is_url_allowed(event.url):

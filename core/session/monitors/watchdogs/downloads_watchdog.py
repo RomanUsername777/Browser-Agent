@@ -133,7 +133,7 @@ class DownloadsWatchdog(BaseWatchdog):
 		self._cdp_event_tasks.clear()
 
 		# Очистить CDP сессию
-		# CDP сессии теперь кэшируются и управляются BrowserSession
+		# CDP сессии теперь кэшируются и управляются ChromeSession
 		self._download_cdp_session = None
 		self._download_cdp_session_setup = False
 
@@ -1298,4 +1298,4 @@ class DownloadsWatchdog(BaseWatchdog):
 		return new_filename
 
 
-# Fix Pydantic circular dependency - this will be called from session.py after BrowserSession is defined
+# Fix Pydantic circular dependency - this will be called from session.py after ChromeSession is defined

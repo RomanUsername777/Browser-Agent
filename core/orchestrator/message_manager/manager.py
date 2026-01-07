@@ -8,9 +8,9 @@ from core.orchestrator.message_manager.models import (
 )
 from core.orchestrator.prompts import AgentMessagePrompt
 from core.orchestrator.models import (
-	ActionResult,
-	AgentOutput,
-	AgentStepInfo,
+	ExecutionResult,
+	StepDecision,
+	StepContext,
 	MessageManagerState,
 )
 from core.session.models import BrowserStateSummary
@@ -173,9 +173,9 @@ class MessageManager:
 
 	def _update_agent_history_description(
 		self,
-		model_output: AgentOutput | None = None,
-		result: list[ActionResult] | None = None,
-		step_info: AgentStepInfo | None = None,
+		model_output: StepDecision | None = None,
+		result: list[ExecutionResult] | None = None,
+		step_info: StepContext | None = None,
 	) -> None:
 		"""Update the agent history description"""
 
@@ -289,9 +289,9 @@ class MessageManager:
 	def create_state_messages(
 		self,
 		browser_state_summary: BrowserStateSummary,
-		model_output: AgentOutput | None = None,
-		result: list[ActionResult] | None = None,
-		step_info: AgentStepInfo | None = None,
+		model_output: StepDecision | None = None,
+		result: list[ExecutionResult] | None = None,
+		step_info: StepContext | None = None,
 		use_vision: bool | Literal['auto'] = True,
 		page_filtered_actions: str | None = None,
 		sensitive_data=None,

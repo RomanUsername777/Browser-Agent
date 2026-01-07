@@ -4,13 +4,13 @@ import asyncio
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 
 class BrowserController:
 	"""Контроллер браузера - слой абстракции над прямыми вызовами CDP."""
 	
-	def __init__(self, browser_session: 'BrowserSession'):
+	def __init__(self, browser_session: 'ChromeSession'):
 		self.browser_session = browser_session
 	
 	async def resolve_node(self, cdp_connection, backend_node_id: int) -> dict | None:

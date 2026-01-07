@@ -30,8 +30,8 @@ from pydantic import BaseModel, ValidationError
 from uuid_extensions import uuid7str
 
 from core.session.profile import BrowserProfile
-from core.session.session import BrowserSession
-Browser = BrowserSession  # Псевдоним
+from core.session.session import ChromeSession
+Browser = ChromeSession  # Псевдоним
 
 # Импортируем BrowserStateSummary ДО использования в аннотациях типов
 from core.session.models import BrowserStateSummary
@@ -49,14 +49,14 @@ from core.orchestrator.message_manager.manager import (
 )
 from core.orchestrator.prompts import SystemPrompt
 from core.orchestrator.models import (
-	ActionResult,
+	ExecutionResult,
 	AgentError,
-	AgentHistory,
-	AgentHistoryList,
-	AgentOutput,
+	ExecutionHistory,
+	ExecutionHistoryList,
+	StepDecision,
 	AgentSettings,
-	AgentState,
-	AgentStepInfo,
+	OrchestratorState,
+	StepContext,
 	AgentStructuredOutput,
 	BrowserStateHistory,
 	DetectedVariable,
@@ -67,7 +67,7 @@ from core.session.session import DEFAULT_BROWSER_PROFILE
 from core.config import CONFIG
 from core.dom_processing.models import DOMInteractedElement
 from core.observability import observe, observe_debug
-from core.actions.registry.models import ActionModel
+from core.actions.registry.models import CommandModel
 from core.actions.manager import Tools
 from core.specialists.email_subagent import EmailSubAgent
 from core.helpers import (
@@ -83,7 +83,7 @@ from core.orchestrator.agent import URLParser, HistoryManager, FileManager, Demo
 logger = logging.getLogger(__name__)
 
 
-def log_response(response: AgentOutput, registry=None, logger=None) -> None:
+def log_response(response: StepDecision, registry=None, logger=None) -> None:
 	"""Утилита для логирования ответа модели."""
 
 	# Используем модульный логгер, если не предоставлен
@@ -124,10 +124,10 @@ def log_response(response: AgentOutput, registry=None, logger=None) -> None:
 Context = TypeVar('Context')
 
 
-AgentHookFunc = Callable[['Agent'], Awaitable[None]]
+AgentHookFunc = Callable[['TaskOrchestrator'], Awaitable[None]]
 
 
-class Agent(Generic[Context, AgentStructuredOutput]):
+class TaskOrchestrator(Generic[Context, AgentStructuredOutput]):
 	@time_execution_sync('--init')
 	def __init__(
 		self,
@@ -135,7 +135,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		llm: BaseChatModel | None = None,
 		# Необязательные параметры
 		browser_profile: BrowserProfile | None = None,
-		browser_session: BrowserSession | None = None,
+		browser_session: ChromeSession | None = None,
 		browser: Browser | None = None,  # Псевдоним для browser_session
 		tools: Tools[Context] | None = None,
 		controller: Tools[Context] | None = None,  # Псевдоним для tools
@@ -145,13 +145,13 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		initial_actions: list[dict[str, dict[str, Any]]] | None = None,
 		# Облачные колбэки
 		register_new_step_callback: (
-			Callable[['BrowserStateSummary', 'AgentOutput', int], None]  # Sync callback
-			| Callable[['BrowserStateSummary', 'AgentOutput', int], Awaitable[None]]  # Async callback
+			Callable[['BrowserStateSummary', 'StepDecision', int], None]  # Sync callback
+			| Callable[['BrowserStateSummary', 'StepDecision', int], Awaitable[None]]  # Async callback
 			| None
 		) = None,
 		register_done_callback: (
-			Callable[['AgentHistoryList'], Awaitable[None]]  # Async Callback
-			| Callable[['AgentHistoryList'], None]  # Sync Callback
+			Callable[['ExecutionHistoryList'], Awaitable[None]]  # Async Callback
+			| Callable[['ExecutionHistoryList'], None]  # Sync Callback
 			| None
 		) = None,
 		register_external_agent_status_raise_error_callback: Callable[[], Awaitable[bool]] | None = None,
@@ -176,7 +176,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		fallback_llm: BaseChatModel | None = None,
 		ground_truth: str | None = None,
 		use_judge: bool = False,
-		injected_agent_state: AgentState | None = None,
+		injected_agent_state: OrchestratorState | None = None,
 		source: str | None = None,
 		file_system_path: str | None = None,
 		task_id: str | None = None,
@@ -269,7 +269,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		if browser_session is not None and demo_mode is not None and browser_session.browser_profile.demo_mode != demo_mode:
 			browser_session.browser_profile = browser_session.browser_profile.model_copy(update={'demo_mode': demo_mode})
 
-		self.browser_session = browser_session or BrowserSession(
+		self.browser_session = browser_session or ChromeSession(
 			browser_profile=browser_profile,
 			id=uuid7str()[:-4] + self.id[-4:],  # Повторное использование последних 4 символов для группировки в логах
 		)
@@ -326,7 +326,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		# Конфигурация резервного LLM
 		self._fallback_llm: BaseChatModel | None = fallback_llm
 		self._using_fallback_llm: bool = False
-		self._original_llm: BaseChatModel = llm  # Сохранение оригинала для справки
+		self._primary_llm: BaseChatModel = llm  # Основной LLM для использования
 		self.directly_open_url = directly_open_url
 		self.include_recent_events = include_recent_events
 		self._url_shortening_limit = _url_shortening_limit
@@ -365,10 +365,10 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		self.token_cost_service.register_llm(page_extraction_llm)
 
 		# Инициализация состояния
-		self.state = injected_agent_state or AgentState()
+		self.state = injected_agent_state or OrchestratorState()
 
 		# Инициализация истории
-		self.history = AgentHistoryList(history=[], usage=None)
+		self.history = ExecutionHistoryList(history=[], usage=None)
 
 		# Инициализация директории агента
 		import time
@@ -522,13 +522,13 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			self.logger.info(f'💬 Сохраняю разговор в {_log_pretty_path(self.settings.save_conversation_path)}')
 
 		# Инициализация отслеживания загрузок (инициализируем ДО использования)
-		assert self.browser_session is not None, 'BrowserSession is not set up'
+		assert self.browser_session is not None, 'ChromeSession is not set up'
 		self.has_downloads_path = self.browser_session.browser_profile.downloads_path is not None
 		self._last_known_downloads: list[str] = []  # Инициализируем всегда, даже если downloads_path не установлен
 		if self.has_downloads_path:
 			self.logger.debug('📁 Инициализирован отслеживание загрузок для агента')
 
-		# Управление паузой на основе событий (вынесено из AgentState для сериализации)
+		# Управление паузой на основе событий (вынесено из OrchestratorState для сериализации)
 		self._external_pause_event = asyncio.Event()
 		self._external_pause_event.set()
 
@@ -579,11 +579,11 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			if (browser_session := getattr(self, 'browser_session', None)) and browser_session.agent_focus_target_id
 			else '--'
 		)
-		return logging.getLogger(f'core.Agent🅰 {_task_id} ⇢ 🅑 {_browser_session_id} 🅣 {_current_target_id}')
+		return logging.getLogger(f'core.Agent {_task_id} {_browser_session_id} {_current_target_id}')
 
 	@property
 	def browser_profile(self) -> BrowserProfile:
-		assert self.browser_session is not None, 'BrowserSession is not set up'
+		assert self.browser_session is not None, 'ChromeSession is not set up'
 		return self.browser_session.browser_profile
 
 	@property
@@ -641,23 +641,23 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 	def _setup_action_models(self) -> None:
 		"""Setup dynamic action models from tools registry"""
 		# Изначально включать только действия без фильтров
-		self.ActionModel = self.tools.registry.create_action_model()
+		self.CommandModel = self.tools.registry.create_action_model()
 		# Создание выходной модели с динамическими действиями
 		if self.settings.flash_mode:
-			self.AgentOutput = AgentOutput.type_with_custom_actions_flash_mode(self.ActionModel)
+			self.StepDecision = StepDecision.type_with_custom_actions_flash_mode(self.CommandModel)
 		elif self.settings.use_thinking:
-			self.AgentOutput = AgentOutput.type_with_custom_actions(self.ActionModel)
+			self.StepDecision = StepDecision.type_with_custom_actions(self.CommandModel)
 		else:
-			self.AgentOutput = AgentOutput.type_with_custom_actions_no_thinking(self.ActionModel)
+			self.StepDecision = StepDecision.type_with_custom_actions_no_thinking(self.CommandModel)
 
 		# используется для принудительного выполнения действия done когда достигнут max_steps
-		self.DoneActionModel = self.tools.registry.create_action_model(include_actions=['done'])
+		self.DoneCommandModel = self.tools.registry.create_action_model(include_actions=['done'])
 		if self.settings.flash_mode:
-			self.DoneAgentOutput = AgentOutput.type_with_custom_actions_flash_mode(self.DoneActionModel)
+			self.DoneStepDecision = StepDecision.type_with_custom_actions_flash_mode(self.DoneCommandModel)
 		elif self.settings.use_thinking:
-			self.DoneAgentOutput = AgentOutput.type_with_custom_actions(self.DoneActionModel)
+			self.DoneStepDecision = StepDecision.type_with_custom_actions(self.DoneCommandModel)
 		else:
-			self.DoneAgentOutput = AgentOutput.type_with_custom_actions_no_thinking(self.DoneActionModel)
+			self.DoneStepDecision = StepDecision.type_with_custom_actions_no_thinking(self.DoneCommandModel)
 
 	async def _register_skills_as_actions(self) -> None:
 		"""Управление навыками агента."""
@@ -705,7 +705,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 	@observe(name='core.step', ignore_output=True, ignore_input=True)
 	@time_execution_async('--step')
-	async def step(self, step_info: AgentStepInfo | None = None) -> None:
+	async def step(self, step_info: StepContext | None = None) -> None:
 		"""Execute one step of the task"""
 		# Инициализация тайминга перед любыми исключениями
 		self.step_start_time = time.time()
@@ -714,6 +714,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Сбор контекста страницы с отдельной обработкой ошибок
 		try:
+			t1 = time.time()
 			page_state = await self._build_step_context(step_info)
 		except Exception as context_error:
 			await self._handle_step_error(context_error)
@@ -722,6 +723,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Получение решения от LLM с отдельной обработкой ошибок
 		try:
+			t2 = time.time()
 			await self._obtain_llm_decision(page_state)
 		except Exception as decision_error:
 			await self._handle_step_error(decision_error)
@@ -730,6 +732,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Выполнение действий с отдельной обработкой ошибок
 		try:
+			t3 = time.time()
 			await self._apply_agent_actions()
 		except Exception as action_error:
 			await self._handle_step_error(action_error)
@@ -738,14 +741,16 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Завершение обработки шага с отдельной обработкой ошибок
 		try:
+			t4 = time.time()
 			await self._finalize_step_processing()
 		except Exception as finalize_error:
 			await self._handle_step_error(finalize_error)
 
 		# Финальная обработка всегда выполняется
+		t5 = time.time()
 		await self._finalize(page_state)
 
-	async def _build_step_context(self, step_info: AgentStepInfo | None = None) -> BrowserStateSummary:
+	async def _build_step_context(self, step_info: StepContext | None = None) -> BrowserStateSummary:
 		"""Собирает контекст для шага: состояние браузера, модели действий, действия страницы. Delegates to StepOrchestrator."""
 		return await self._step_orchestrator.build_step_context(step_info)
 
@@ -781,7 +786,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Логирует метаданные письма. Delegates to StepManager."""
 		self._step_manager.log_email_metadata(email_metadata)
 
-	async def _prepare_actions_and_messages(self, page_state: BrowserStateSummary, step_info: AgentStepInfo | None) -> None:
+	async def _prepare_actions_and_messages(self, page_state: BrowserStateSummary, step_info: StepContext | None) -> None:
 		"""Подготавливает действия и сообщения для LLM. Delegates to StepManager."""
 		await self._step_manager.prepare_actions_and_messages(page_state, step_info)
 
@@ -789,11 +794,11 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Обновляет модели действий для текущей страницы. Delegates to StepManager."""
 		await self._step_manager.update_page_action_models(page_url)
 
-	async def _check_forced_completion(self, step_info: AgentStepInfo | None) -> None:
+	async def _check_forced_completion(self, step_info: StepContext | None) -> None:
 		"""Проверяет условия принудительного завершения. Delegates to StepManager."""
 		await self._step_manager.check_forced_completion(step_info)
 
-	async def _create_state_messages(self, page_state: BrowserStateSummary, step_info: AgentStepInfo | None, page_filtered_actions: str | None) -> None:
+	async def _create_state_messages(self, page_state: BrowserStateSummary, step_info: StepContext | None, page_filtered_actions: str | None) -> None:
 		"""Создает сообщения состояния для LLM. Delegates to StepManager."""
 		await self._step_manager.create_state_messages(page_state, step_info, page_filtered_actions)
 
@@ -806,7 +811,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Подготавливает сообщения для отправки в LLM. Delegates to LLMManager."""
 		return await self._llm_manager.prepare_llm_messages()
 
-	async def _call_llm_with_timeout(self, context_messages: list[BaseMessage]) -> AgentOutput:
+	async def _call_llm_with_timeout(self, context_messages: list[BaseMessage]) -> StepDecision:
 		"""Вызывает LLM с обработкой таймаутов. Delegates to LLMManager."""
 		return await self._llm_manager.call_llm_with_timeout(context_messages)
 
@@ -814,7 +819,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Логирует таймаут вызова LLM. Delegates to LLMManager."""
 		await self._llm_manager.log_llm_timeout(context_messages)
 
-	def _store_llm_response(self, llm_response: AgentOutput) -> None:
+	def _store_llm_response(self, llm_response: StepDecision) -> None:
 		"""Сохраняет ответ LLM в состоянии агента. Delegates to LLMManager."""
 		self._llm_manager.store_llm_response(llm_response)
 
@@ -896,14 +901,14 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		await self._demo_mode_log(f'Ошибка шага: {error_msg}', 'error', {'step': self.state.n_steps})
 		
 		# Сохранение результата с ошибкой
-		self.state.last_result = [ActionResult(error=error_msg)]
+		self.state.last_result = [ExecutionResult(error=error_msg)]
 		return None
 
 	async def _finalize(self, page_state: BrowserStateSummary | None) -> None:
 		"""Завершает шаг с историей, логированием и событиями. Delegates to HistoryManager."""
 		await self._history_manager.finalize(page_state, self.step_start_time)
 
-	async def _force_done_after_last_step(self, step_info: AgentStepInfo | None = None) -> None:
+	async def _force_done_after_last_step(self, step_info: StepContext | None = None) -> None:
 		"""Handle special processing for the last step"""
 		if step_info and step_info.is_last_step():
 			# Добавление предупреждения о последнем шаге при необходимости
@@ -912,7 +917,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			msg += '\nInclude everything you found out for the ultimate task in the done text.'
 			self.logger.debug('Last step finishing up')
 			self._message_manager._add_context_message(UserMessage(content=msg))
-			self.AgentOutput = self.DoneAgentOutput
+			self.StepDecision = self.DoneStepDecision
 
 	async def _force_done_after_failure(self) -> None:
 		"""Принудительное завершение после неудачи"""
@@ -925,7 +930,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 			self.logger.debug('Force done action, because we reached max_failures.')
 			self._message_manager._add_context_message(UserMessage(content=msg))
-			self.AgentOutput = self.DoneAgentOutput
+			self.StepDecision = self.DoneStepDecision
 
 	@observe(ignore_input=True, ignore_output=False)
 	async def _judge_trace(self) -> JudgementResult | None:
@@ -936,19 +941,19 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Выполняет judge-оценку и логирование."""
 		return
 
-	async def _get_model_output_with_retry(self, context_messages: list[BaseMessage]) -> AgentOutput:
+	async def _get_model_output_with_retry(self, context_messages: list[BaseMessage]) -> StepDecision:
 		"""Получает вывод модели с логикой повторных попыток для пустых действий. Delegates to LLMManager."""
 		return await self._llm_manager.get_model_output_with_retry(context_messages)
 
-	def _is_empty_action(self, agent_decision: AgentOutput) -> bool:
+	def _is_empty_action(self, agent_decision: StepDecision) -> bool:
 		"""Проверяет, является ли действие пустым. Delegates to LLMManager."""
 		return self._llm_manager.is_empty_action(agent_decision)
 
-	async def _retry_with_clarification(self, context_messages: list[BaseMessage]) -> AgentOutput:
+	async def _retry_with_clarification(self, context_messages: list[BaseMessage]) -> StepDecision:
 		"""Повторяет вызов модели с уточняющим сообщением. Delegates to LLMManager."""
 		return await self._llm_manager.retry_with_clarification(context_messages)
 
-	def _create_safe_noop_action(self) -> AgentOutput:
+	def _create_safe_noop_action(self) -> StepDecision:
 		"""Создает безопасное noop действие при отсутствии ответа от модели. Delegates to LLMManager."""
 		return self._llm_manager.create_safe_noop_action()
 
@@ -962,9 +967,9 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 	async def _make_history_item(
 		self,
-		agent_decision: AgentOutput | None,
+		agent_decision: StepDecision | None,
 		page_state: BrowserStateSummary,
-		action_results: list[ActionResult],
+		action_results: list[ExecutionResult],
 		metadata: StepMetadata | None = None,
 		state_message: str | None = None,
 	) -> None:
@@ -1012,7 +1017,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 	@time_execution_async('--get_next_action')
 	@observe_debug(ignore_input=True, ignore_output=True, name='get_model_output')
-	async def get_model_output(self, input_messages: list[BaseMessage]) -> AgentOutput:
+	async def get_model_output(self, input_messages: list[BaseMessage]) -> StepDecision:
 		"""Get next action from LLM based on current state. Delegates to LLMManager."""
 		return await self._llm_manager.get_model_output(input_messages)
 
@@ -1038,7 +1043,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Log step context information. Delegates to LoggingManager."""
 		self._run_manager.log_step_context(browser_state_summary)
 
-	def _log_next_action_summary(self, parsed: 'AgentOutput') -> None:
+	def _log_next_action_summary(self, parsed: 'StepDecision') -> None:
 		"""Log a comprehensive summary of the next action(s). Delegates to LoggingManager."""
 		self._run_manager.log_next_action_summary(parsed)
 
@@ -1050,11 +1055,11 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Send log message to demo mode panel. Delegates to LoggingManager."""
 		await self._run_manager.demo_mode_log(message, level, metadata)
 
-	async def _broadcast_model_state(self, parsed: 'AgentOutput') -> None:
+	async def _broadcast_model_state(self, parsed: 'StepDecision') -> None:
 		"""Broadcast model state to demo mode. Delegates to LoggingManager."""
 		await self._run_manager.broadcast_model_state(parsed)
 
-	def _log_step_completion_summary(self, step_start_time: float, result: list[ActionResult]) -> str | None:
+	def _log_step_completion_summary(self, step_start_time: float, result: list[ExecutionResult]) -> str | None:
 		"""Log step completion summary. Delegates to LoggingManager."""
 		return self._run_manager.log_step_completion_summary(step_start_time, result)
 
@@ -1066,7 +1071,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Отправка телеметрии."""
 		return
 
-	async def take_step(self, step_info: AgentStepInfo | None = None) -> tuple[bool, bool]:
+	async def take_step(self, step_info: StepContext | None = None) -> tuple[bool, bool]:
 		"""Take a step
 
 		Returns:
@@ -1107,7 +1112,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		self,
 		step: int,
 		max_steps: int,
-		step_info: AgentStepInfo,
+		step_info: StepContext,
 		on_step_start: AgentHookFunc | None = None,
 		on_step_end: AgentHookFunc | None = None,
 	) -> bool:
@@ -1140,7 +1145,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			self.logger.error(f'⏰ {error_msg}')
 			await self._demo_mode_log(error_msg, 'error', {'step': step + 1})
 			self.state.consecutive_failures += 1
-			self.state.last_result = [ActionResult(error=error_msg)]
+			self.state.last_result = [ExecutionResult(error=error_msg)]
 
 		if on_step_end is not None:
 			await on_step_end(self)
@@ -1167,7 +1172,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		max_steps: int = 100,
 		on_step_start: AgentHookFunc | None = None,
 		on_step_end: AgentHookFunc | None = None,
-	) -> AgentHistoryList[AgentStructuredOutput]:
+	) -> ExecutionHistoryList[AgentStructuredOutput]:
 		"""Execute the task with maximum number of steps"""
 
 		loop = asyncio.get_event_loop()
@@ -1258,7 +1263,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 					agent_run_error = 'Agent stopped programmatically'
 					break
 
-				step_info = AgentStepInfo(step_number=current_step, max_steps=max_steps)
+				step_info = StepContext(step_number=current_step, max_steps=max_steps)
 				is_done = await self._execute_step(current_step, max_steps, step_info, on_step_start, on_step_end)
 
 				if is_done:
@@ -1273,9 +1278,9 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				agent_run_error = 'Failed to complete task in maximum steps'
 
 				self.history.add_item(
-					AgentHistory(
+					ExecutionHistory(
 						model_output=None,
-						result=[ActionResult(error=agent_run_error, include_in_memory=True)],
+						result=[ExecutionResult(error=agent_run_error, include_in_memory=True)],
 						state=BrowserStateHistory(
 							url='',
 							title='',
@@ -1346,7 +1351,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 	@observe_debug(ignore_input=True, ignore_output=True)
 	@time_execution_async('--multi_act')
-	async def multi_act(self, actions: list[ActionModel]) -> list[ActionResult]:
+	async def multi_act(self, actions: list[CommandModel]) -> list[ExecutionResult]:
 		"""Execute multiple actions. Delegates to ActionExecutionManager."""
 		return await self._action_execution.multi_act(actions)
 
@@ -1406,13 +1411,13 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 	async def rerun_history(
 		self,
-		history: AgentHistoryList,
+		history: ExecutionHistoryList,
 		max_retries: int = 3,
 		skip_failures: bool = True,
 		delay_between_actions: float = 2.0,
 		summary_llm: BaseChatModel | None = None,
 		ai_step_llm: BaseChatModel | None = None,
-	) -> list[ActionResult]:
+	) -> list[ExecutionResult]:
 		"""Rerun a saved history of actions. Delegates to RerunManager."""
 		return await self._rerun_manager.rerun_history(
 			history, max_retries, skip_failures, delay_between_actions, summary_llm, ai_step_llm
@@ -1427,7 +1432,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		history_file: str | Path | None = None,
 		variables: dict[str, str] | None = None,
 		**kwargs,
-	) -> list[ActionResult]:
+	) -> list[ExecutionResult]:
 		"""Load history from file and rerun it. Delegates to RerunManager."""
 		return await self._rerun_manager.load_and_rerun(history_file, variables, **kwargs)
 
@@ -1458,10 +1463,10 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 
 		# Task stopped
 
-	def _convert_initial_actions(self, actions: list[dict[str, dict[str, Any]]]) -> list[ActionModel]:
-		"""Convert dictionary-based actions to ActionModel instances"""
+	def _convert_initial_actions(self, actions: list[dict[str, dict[str, Any]]]) -> list[CommandModel]:
+		"""Convert dictionary-based actions to CommandModel instances"""
 		converted_actions = []
-		action_model = self.ActionModel
+		action_model = self.CommandModel
 		for action_dict in actions:
 			# Each action_dict should have a single key-value pair
 			action_name = next(iter(action_dict))
@@ -1474,8 +1479,8 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			# Create validated parameters using the appropriate param model
 			validated_params = param_model(**params)
 
-			# Create ActionModel instance with the validated parameters
-			action_model = self.ActionModel(**{action_name: validated_params})
+			# Create CommandModel instance with the validated parameters
+			action_model = self.CommandModel(**{action_name: validated_params})
 			converted_actions.append(action_model)
 
 		return converted_actions
@@ -1530,23 +1535,23 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 	async def _update_action_models_for_page(self, page_url: str) -> None:
 		"""Update action models with page-specific actions"""
 		# Create new action model with current page's filtered actions
-		self.ActionModel = self.tools.registry.create_action_model(page_url=page_url)
+		self.CommandModel = self.tools.registry.create_action_model(page_url=page_url)
 		# Update output model with the new actions
 		if self.settings.flash_mode:
-			self.AgentOutput = AgentOutput.type_with_custom_actions_flash_mode(self.ActionModel)
+			self.StepDecision = StepDecision.type_with_custom_actions_flash_mode(self.CommandModel)
 		elif self.settings.use_thinking:
-			self.AgentOutput = AgentOutput.type_with_custom_actions(self.ActionModel)
+			self.StepDecision = StepDecision.type_with_custom_actions(self.CommandModel)
 		else:
-			self.AgentOutput = AgentOutput.type_with_custom_actions_no_thinking(self.ActionModel)
+			self.StepDecision = StepDecision.type_with_custom_actions_no_thinking(self.CommandModel)
 
 		# Update done action model too
-		self.DoneActionModel = self.tools.registry.create_action_model(include_actions=['done'], page_url=page_url)
+		self.DoneCommandModel = self.tools.registry.create_action_model(include_actions=['done'], page_url=page_url)
 		if self.settings.flash_mode:
-			self.DoneAgentOutput = AgentOutput.type_with_custom_actions_flash_mode(self.DoneActionModel)
+			self.DoneStepDecision = StepDecision.type_with_custom_actions_flash_mode(self.DoneCommandModel)
 		elif self.settings.use_thinking:
-			self.DoneAgentOutput = AgentOutput.type_with_custom_actions(self.DoneActionModel)
+			self.DoneStepDecision = StepDecision.type_with_custom_actions(self.DoneCommandModel)
 		else:
-			self.DoneAgentOutput = AgentOutput.type_with_custom_actions_no_thinking(self.DoneActionModel)
+			self.DoneStepDecision = StepDecision.type_with_custom_actions_no_thinking(self.DoneCommandModel)
 
 	async def authenticate_cloud_sync(self, show_instructions: bool = True) -> bool:
 		"""
@@ -1569,7 +1574,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		max_steps: int = 100,
 		on_step_start: AgentHookFunc | None = None,
 		on_step_end: AgentHookFunc | None = None,
-	) -> AgentHistoryList[AgentStructuredOutput]:
+	) -> ExecutionHistoryList[AgentStructuredOutput]:
 		"""Synchronous wrapper around the async run method for easier usage without asyncio."""
 		import asyncio
 
@@ -1579,7 +1584,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		"""Detect reusable variables in agent history. Delegates to HistoryManager."""
 		return self._history_manager_component.detect_variables()
 
-	def _substitute_variables_in_history(self, history: AgentHistoryList, variables: dict[str, str]) -> AgentHistoryList:
+	def _substitute_variables_in_history(self, history: ExecutionHistoryList, variables: dict[str, str]) -> ExecutionHistoryList:
 		"""Substitute variables in history with new values for rerunning with different data. Delegates to HistoryManager."""
 		return self._history_manager_component.substitute_variables_in_history(history, variables)
 

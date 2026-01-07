@@ -6,13 +6,13 @@ if TYPE_CHECKING:
 	from cdp_use.cdp.input.commands import DispatchMouseEventParameters, SynthesizeScrollGestureParameters
 	from cdp_use.cdp.input.types import MouseButton
 
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 
 class Mouse:
 	"""Операции с мышью для target."""
 
-	def __init__(self, browser_session: 'BrowserSession', session_id: str | None = None, target_id: str | None = None):
+	def __init__(self, browser_session: 'ChromeSession', session_id: str | None = None, target_id: str | None = None):
 		self._browser_session = browser_session
 		self._client = browser_session.cdp_client
 		self._session_id = session_id

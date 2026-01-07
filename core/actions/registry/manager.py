@@ -11,11 +11,11 @@ from typing import Any, Generic, Optional, TypeVar, Union, get_args, get_origin
 import pyotp
 from pydantic import BaseModel, Field, RootModel, create_model
 
-from core.session.session import BrowserSession
+from core.session.session import ChromeSession
 from core.ai_models.models import BaseChatModel
 from core.observability import observe_debug
 from core.actions.registry.models import (
-	ActionModel,
+	CommandModel,
 	ActionRegistry,
 	RegisteredAction,
 	SpecialActionParameters,
@@ -58,7 +58,7 @@ class Registry(Generic[Context]):
 		# e.g. CDP client, 2fa code getters, sensitive_data wrappers, other context, etc.
 		return {
 			'context': None,  # Context is a TypeVar, so we can't validate type
-			'browser_session': BrowserSession,
+			'browser_session': ChromeSession,
 			'page_url': str,
 			'cdp_client': None,  # CDPClient type from cdp_use, but we don't import it here
 			'page_extraction_llm': BaseChatModel,
@@ -151,12 +151,12 @@ class Registry(Generic[Context]):
 					param_default = ... if action_param.default == Parameter.empty else action_param.default
 					model_fields[action_param.name] = (param_annotation, param_default)
 
-				param_model = create_model(f'{func.__name__}_Params', __base__=ActionModel, **model_fields)
+				param_model = create_model(f'{func.__name__}_Params', __base__=CommandModel, **model_fields)
 			else:
 				# No action parameters, create empty model
 				param_model = create_model(
 					f'{func.__name__}_Params',
-					__base__=ActionModel,
+					__base__=CommandModel,
 				)
 		assert param_model is not None, f'param_model is None for {func.__name__}'
 
@@ -275,7 +275,7 @@ class Registry(Generic[Context]):
 		# Примечание: типы требуют доработки
 		return create_model(
 			f'{function.__name__}_parameters',
-			__base__=ActionModel,
+			__base__=CommandModel,
 			**params,  # type: ignore
 		)
 
@@ -321,7 +321,7 @@ class Registry(Generic[Context]):
 		self,
 		action_name: str,
 		params: dict,
-		browser_session: BrowserSession | None = None,
+		browser_session: ChromeSession | None = None,
 		page_extraction_llm: BaseChatModel | None = None,
 		file_system: Any | None = None,
 		sensitive_data: dict[str, str | dict[str, str]] | None = None,
@@ -436,7 +436,7 @@ class Registry(Generic[Context]):
 					if match_url_with_domain_pattern(current_url, domain_pattern_or_key):
 						relevant_secrets.update(secret_content)
 			else:
-				# Old format: {key: value}, available for all domains (for backward compatibility only)
+				# Упрощенный формат: {key: value}, доступен для всех доменов
 				relevant_secrets[domain_pattern_or_key] = secret_content
 
 		# Remove empty values
@@ -482,7 +482,7 @@ class Registry(Generic[Context]):
 		return type(params).model_validate(params_with_secrets_replaced)
 
 	# @time_execution_sync('--create_action_model')
-	def create_action_model(self, include_actions: list[str] | None = None, page_url: str | None = None) -> type[ActionModel]:
+	def create_action_model(self, include_actions: list[str] | None = None, page_url: str | None = None) -> type[CommandModel]:
 		"""Creates a Union of individual action models from registered actions,
 		used by LLM APIs that support tool calling & enforce a schema.
 
@@ -519,8 +519,8 @@ class Registry(Generic[Context]):
 		for action_name, registered_action in filtered_actions.items():
 			# Generate individual model for each action containing only one field
 			single_action_model = create_model(
-				f'{action_name.title().replace("_", "")}ActionModel',
-				__base__=ActionModel,
+				f'{action_name.title().replace("_", "")}CommandModel',
+				__base__=CommandModel,
 				**{
 					action_name: (
 						registered_action.param_model,
@@ -530,21 +530,21 @@ class Registry(Generic[Context]):
 			)
 			per_action_models.append(single_action_model)
 
-		# If no actions available, return empty ActionModel
+		# If no actions available, return empty CommandModel
 		if not per_action_models:
-			return create_model('EmptyActionModel', __base__=ActionModel)
+			return create_model('EmptyCommandModel', __base__=CommandModel)
 
-		# Create proper Union type that maintains ActionModel interface
+		# Create proper Union type that maintains CommandModel interface
 		if len(per_action_models) == 1:
 			# If only one action, return it directly (no Union needed)
 			result_model = per_action_models[0]
 
 		# Length is greater than 1
 		else:
-			# Create Union type using RootModel that properly delegates ActionModel methods
+			# Create Union type using RootModel that properly delegates CommandModel methods
 			action_union_type = Union[tuple(per_action_models)]  # type: ignore : Typing doesn't understand that the length is >= 2 (by design)
 
-			class ActionModelUnion(RootModel[action_union_type]):  # type: ignore
+			class CommandModelUnion(RootModel[action_union_type]):  # type: ignore
 				@classmethod
 				def model_validate(cls, obj, *, strict=None, from_attributes=None, context=None):
 					"""Custom validation: try each type in Union sequentially"""
@@ -585,10 +585,10 @@ class Registry(Generic[Context]):
 					return super().model_dump(**kwargs)
 
 			# Set the name for better debugging
-			ActionModelUnion.__name__ = 'ActionModel'
-			ActionModelUnion.__qualname__ = 'ActionModel'
+			CommandModelUnion.__name__ = 'CommandModel'
+			CommandModelUnion.__qualname__ = 'CommandModel'
 
-			result_model = ActionModelUnion
+			result_model = CommandModelUnion
 
 		return result_model  # type:ignore
 

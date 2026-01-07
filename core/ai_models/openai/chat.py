@@ -310,11 +310,15 @@ class ChatOpenAI(BaseChatModel):
 				import logging
 				logger = logging.getLogger(__name__)
 				
+				# DEBUG: Логируем сырой ответ LLM
+				logger.debug(f'DEBUG RAW LLM RESPONSE (first 500 chars): {content[:500] if content else "EMPTY"}')
+				
 				# Сначала пытаемся парсить напрямую (быстрее для чистого JSON)
 				parsed = None
 				try:
 					parsed = output_format.model_validate_json(content)
-				except Exception:
+				except Exception as parse_error:
+					logger.debug(f'DEBUG: Direct parse failed: {parse_error}')
 					# Если прямой парсинг не удался, пытаемся извлечь JSON из markdown обертки
 					# Это нормальная ситуация, когда модель возвращает JSON в ```json ... ```
 					from core.helpers import extract_json_from_text

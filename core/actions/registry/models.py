@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
-from core.session.session import BrowserSession
+from core.session.session import ChromeSession
 from core.ai_models.models import BaseChatModel
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ class RegisteredAction(BaseModel):
 			return f'{self.name}: {self.description}'
 
 
-class ActionModel(BaseModel):
+class CommandModel(BaseModel):
 	"""Base model for dynamically created action models"""
 
 	# this will have all the registered actions, e.g.
@@ -154,7 +154,7 @@ class SpecialActionParameters(BaseModel):
 	context: Any | None = None
 
 	# Сессия браузера, может использоваться для открытия вкладок, навигации и доступа к CDP
-	browser_session: BrowserSession | None = None
+	browser_session: ChromeSession | None = None
 
 	# Current page URL for filtering and context
 	page_url: str | None = None

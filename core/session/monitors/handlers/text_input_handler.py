@@ -5,7 +5,7 @@ import json
 from typing import TYPE_CHECKING
 
 from core.dom_processing.manager import EnhancedDOMTreeNode
-from core.session.events import TypeTextEvent
+from core.session.events import TextInputRequest
 from core.session.models import BrowserError, URLNotAllowedError
 from core.observability import observe_debug
 from cdp_use.cdp.input.commands import DispatchKeyEventParameters
@@ -24,7 +24,7 @@ class TextInputHandler:
 		self.browser_controller = watchdog.browser_controller
 		self.logger = watchdog.logger
 
-	async def on_TypeTextEvent(self, event: TypeTextEvent) -> dict | None:
+	async def on_TextInputRequest(self, event: TextInputRequest) -> dict | None:
 		"""Обработать запрос ввода текста с CDP."""
 		try:
 			# Использовать предоставленный узел
@@ -999,4 +999,91 @@ class TextInputHandler:
 
 		# Запасной вариант для неизвестных символов
 		return f'Key{character.upper()}'
+
+	async def _check_element_occlusion(self, backend_node_id: int, x: float, y: float, cdp_connection) -> bool:
+		"""Проверить, перекрыт ли элемент другими элементами в указанных координатах.
+
+		Args:
+			backend_node_id: Backend node ID целевого элемента
+			x: X координата для проверки
+			y: Y координата для проверки
+			cdp_connection: CDP сессия для использования
+
+		Returns:
+			True если элемент перекрыт, False если кликабелен
+		"""
+		try:
+			connection_session_id = cdp_connection.session_id
+
+			# Получить информацию о целевом элементе для сравнения через контроллер
+			resolve_result = await self.browser_controller.resolve_node(cdp_connection, backend_node_id)
+
+			if not resolve_result or 'object' not in resolve_result:
+				self.logger.debug('Could not resolve target element, assuming occluded')
+				return True
+
+			js_object_id = resolve_result['object']['objectId']
+
+			# Получить информацию о целевом элементе через контроллер
+			element_info_result = await self.browser_controller.call_function_on(
+				cdp_connection,
+				js_object_id,
+				"""
+				function() {
+					const getElementInfo = (el) => {
+						return {
+							tagName: el.tagName,
+							id: el.id || '',
+							className: el.className || '',
+							textContent: (el.textContent || '').substring(0, 100)
+						};
+					}
+
+
+					const elementAtPoint = document.elementFromPoint(arguments[0], arguments[1]);
+					if (!elementAtPoint) {
+						return { targetInfo: getElementInfo(this), isClickable: false };
+					}
+
+
+					// Simple containment-based clickability logic
+					const isClickable = this === elementAtPoint ||
+						this.contains(elementAtPoint) ||
+						elementAtPoint.contains(this);
+
+					return {
+						targetInfo: getElementInfo(this),
+						elementAtPointInfo: getElementInfo(elementAtPoint),
+						isClickable: isClickable
+					};
+				}
+				""",
+				return_by_value=True,
+				arguments=[{'value': x}, {'value': y}]
+			)
+
+			if 'result' not in element_info_result or 'value' not in element_info_result['result']:
+				self.logger.debug('Could not get target element info, assuming occluded')
+				return True
+
+			occlusion_data = element_info_result['result']['value']
+			element_clickable = occlusion_data.get('isClickable', False)
+
+			if element_clickable:
+				self.logger.debug('Element is clickable (target, contained, or semantically related)')
+				return False
+			else:
+				target_element_info = occlusion_data.get('targetInfo', {})
+				point_element_info = occlusion_data.get('elementAtPointInfo', {})
+				self.logger.debug(
+					f'Element is occluded. Target: {target_element_info.get("tagName", "unknown")} '
+					f'(id={target_element_info.get("id", "none")}), '
+					f'ElementAtPoint: {point_element_info.get("tagName", "unknown")} '
+					f'(id={point_element_info.get("id", "none")})'
+				)
+				return True
+
+		except Exception as occlusion_error:
+			self.logger.debug(f'Occlusion check failed: {occlusion_error}, assuming not occluded')
+			return False
 

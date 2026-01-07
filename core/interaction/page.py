@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 	)
 	from cdp_use.cdp.target.types import TargetInfo
 
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 	from core.ai_models.models import BaseChatModel
 
 	from .element import Element
@@ -39,7 +39,7 @@ class Page:
 	"""Операции со страницей (вкладка или iframe)."""
 
 	def __init__(
-		self, browser_session: 'BrowserSession', target_id: str, session_id: str | None = None, llm: 'BaseChatModel | None' = None
+		self, browser_session: 'ChromeSession', target_id: str, session_id: str | None = None, llm: 'BaseChatModel | None' = None
 	):
 		self._browser_session = browser_session
 		self._client = browser_session.cdp_client

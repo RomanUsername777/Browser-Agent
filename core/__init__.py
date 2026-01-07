@@ -37,10 +37,10 @@ base_subprocess.BaseSubprocessTransport.__del__ = _patched_del
 # Типы для lazy imports
 if TYPE_CHECKING:
     from core.orchestrator.prompts import SystemPrompt
-    from core.orchestrator.manager import Agent
-    from core.orchestrator.models import ActionModel, ActionResult, AgentHistoryList
-    from core.session import BrowserProfile, BrowserSession
-    from core.session import BrowserSession as Browser
+    from core.orchestrator.manager import TaskOrchestrator
+    from core.orchestrator.models import CommandModel, ExecutionResult, ExecutionHistoryList
+    from core.session import BrowserProfile, ChromeSession
+    from core.session import ChromeSession as Browser
     from core.dom_processing.manager import DomService
     from core.ai_models.anthropic.chat import ChatAnthropic
     from core.ai_models.openai.chat import ChatOpenAI
@@ -48,13 +48,14 @@ if TYPE_CHECKING:
 
 # Lazy imports mapping
 _LAZY_IMPORTS = {
-    'Agent': ('core.orchestrator.manager', 'Agent'),
+    'TaskOrchestrator': ('core.orchestrator.manager', 'TaskOrchestrator'),
+    'Agent': ('core.orchestrator.manager', 'TaskOrchestrator'),  # Alias for backwards compatibility
     'SystemPrompt': ('core.orchestrator.prompts', 'SystemPrompt'),
-    'ActionModel': ('core.orchestrator.models', 'ActionModel'),
-    'ActionResult': ('core.orchestrator.models', 'ActionResult'),
-    'AgentHistoryList': ('core.orchestrator.models', 'AgentHistoryList'),
-    'BrowserSession': ('core.session', 'BrowserSession'),
-    'Browser': ('core.session', 'BrowserSession'),  # Alias
+    'CommandModel': ('core.orchestrator.models', 'CommandModel'),
+    'ExecutionResult': ('core.orchestrator.models', 'ExecutionResult'),
+    'ExecutionHistoryList': ('core.orchestrator.models', 'ExecutionHistoryList'),
+    'ChromeSession': ('core.session', 'ChromeSession'),
+    'Browser': ('core.session', 'ChromeSession'),  # Alias
     'BrowserProfile': ('core.session', 'BrowserProfile'),
     'Tools': ('core.actions.manager', 'Tools'),
     'DomService': ('core.dom_processing.manager', 'DomService'),
@@ -77,16 +78,17 @@ def __getattr__(name: str):
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 __all__ = [
-    'Agent',
-    'BrowserSession',
+    'TaskOrchestrator',
+    'Agent',  # Alias for backwards compatibility
+    'ChromeSession',
     'Browser',
     'BrowserProfile',
     'Tools',
     'DomService',
     'SystemPrompt',
-    'ActionResult',
-    'ActionModel',
-    'AgentHistoryList',
+    'ExecutionResult',
+    'CommandModel',
+    'ExecutionHistoryList',
     'ChatOpenAI',
     'ChatAnthropic',
 ]

@@ -5,7 +5,7 @@ import json
 from typing import TYPE_CHECKING
 
 from core.dom_processing.manager import EnhancedDOMTreeNode
-from core.session.events import GoBackEvent, GoForwardEvent, RefreshEvent
+from core.session.events import NavigateBackRequest, NavigateForwardRequest, PageRefreshRequest
 from core.session.models import BrowserError, URLNotAllowedError
 from core.observability import observe_debug
 
@@ -23,7 +23,7 @@ class NavigationHandler:
 		self.browser_controller = watchdog.browser_controller
 		self.logger = watchdog.logger
 
-	async def on_GoBackEvent(self, event: GoBackEvent) -> None:
+	async def on_NavigateBackRequest(self, event: NavigateBackRequest) -> None:
 		"""Обработать запрос навигации назад с CDP."""
 		cdp_connection = await self.browser_session.get_or_create_cdp_session()
 		try:
@@ -47,14 +47,14 @@ class NavigationHandler:
 
 			# Подождать навигации
 			await asyncio.sleep(0.5)
-			# Навигация обрабатывается BrowserSession через события
+			# Навигация обрабатывается ChromeSession через события
 
 			self.logger.info(f'🔙 Navigated back to {history_entries[history_index - 1]["url"]}')
 		except Exception as back_error:
 			raise
 
 
-	async def on_GoForwardEvent(self, event: GoForwardEvent) -> None:
+	async def on_NavigateForwardRequest(self, event: NavigateForwardRequest) -> None:
 		"""Обработать запрос навигации вперед с CDP."""
 		cdp_connection = await self.browser_session.get_or_create_cdp_session()
 		try:
@@ -76,14 +76,14 @@ class NavigationHandler:
 
 			# Подождать навигации
 			await asyncio.sleep(0.5)
-			# Навигация обрабатывается BrowserSession через события
+			# Навигация обрабатывается ChromeSession через события
 
 			self.logger.info(f'🔜 Navigated forward to {history_entries[history_index + 1]["url"]}')
 		except Exception as forward_error:
 			raise
 
 
-	async def on_RefreshEvent(self, event: RefreshEvent) -> None:
+	async def on_PageRefreshRequest(self, event: PageRefreshRequest) -> None:
 		"""Обработать запрос обновления target с CDP."""
 		cdp_connection = await self.browser_session.get_or_create_cdp_session()
 		try:
@@ -95,7 +95,7 @@ class NavigationHandler:
 
 			# Примечание: Мы не очищаем кэшированное состояние здесь - позволим следующему запросу состояния перестроить при необходимости
 
-			# Навигация обрабатывается BrowserSession через события
+			# Навигация обрабатывается ChromeSession через события
 
 			self.logger.info('🔄 Target refreshed')
 		except Exception as refresh_error:

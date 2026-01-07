@@ -8,13 +8,13 @@ from cdp_use.cdp.target import TargetID
 from core.dom_processing.models import TargetInfo
 
 if TYPE_CHECKING:
-    from core.session.session import BrowserSession
+    from core.session.session import ChromeSession
 
 
 class CDPOperationsManager:
     """Manages low-level CDP operations for browser control."""
 
-    def __init__(self, browser_session: 'BrowserSession'):
+    def __init__(self, browser_session: 'ChromeSession'):
         self.browser_session = browser_session
         self.logger = browser_session.logger
 

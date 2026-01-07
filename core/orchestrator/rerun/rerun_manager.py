@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 from core.ai_models.models import BaseChatModel
 from core.dom_processing.models import DOMInteractedElement
 from core.orchestrator.models import (
-    AgentHistory,
-    AgentHistoryList,
-    ActionResult,
+    ExecutionHistory,
+    ExecutionHistoryList,
+    ExecutionResult,
     BrowserStateHistory,
     RerunSummaryAction,
     StepMetadata,
@@ -17,32 +17,32 @@ from core.orchestrator.models import (
 from core.session.models import BrowserStateSummary
 
 if TYPE_CHECKING:
-    from core.actions.registry.models import ActionModel
-    from core.orchestrator.manager import Agent
+    from core.actions.registry.models import CommandModel
+    from core.orchestrator.manager import TaskOrchestrator
 
 
 class RerunManager:
     """Менеджер для rerun истории агента."""
 
-    def __init__(self, agent: 'Agent'):
-        self.agent = agent
+    def __init__(self, agent: 'TaskOrchestrator'):
+        self.orchestrator = agent
         self.logger = agent.logger
 
     async def rerun_history(
         self,
-        history: AgentHistoryList,
+        history: ExecutionHistoryList,
         max_retries: int = 3,
         skip_failures: bool = True,
         delay_between_actions: float = 2.0,
         summary_llm: BaseChatModel | None = None,
         ai_step_llm: BaseChatModel | None = None,
-    ) -> list[ActionResult]:
+    ) -> list[ExecutionResult]:
         """Rerun a saved history of actions with error handling and retry logic."""
         # Skip cloud sync session events for rerunning
-        self.agent.state.session_initialized = True
+        self.orchestrator.state.session_initialized = True
 
         # Initialize browser session
-        await self.agent.browser_session.start()
+        await self.orchestrator.browser_session.start()
 
         results = []
 
@@ -75,7 +75,7 @@ class RerunManager:
                 or history_item.model_output.action == [None]
             ):
                 self.logger.warning(f'{step_name}: No action to replay, skipping')
-                results.append(ActionResult(error='No action to replay'))
+                results.append(ExecutionResult(error='No action to replay'))
                 continue
 
             retry_count = 0
@@ -91,7 +91,7 @@ class RerunManager:
                         error_msg = f'{step_name} failed after {max_retries} attempts: {str(e)}'
                         self.logger.error(error_msg)
                         if not skip_failures:
-                            results.append(ActionResult(error=error_msg))
+                            results.append(ExecutionResult(error=error_msg))
                             raise RuntimeError(error_msg)
                     else:
                         self.logger.warning(f'{step_name} failed (attempt {retry_count}/{max_retries}), retrying...')
@@ -99,20 +99,20 @@ class RerunManager:
 
         # Generate AI summary of rerun completion
         self.logger.info('🤖 Generating AI summary of rerun completion...')
-        summary_result = await self._generate_rerun_summary(self.agent.task, results, summary_llm)
+        summary_result = await self._generate_rerun_summary(self.orchestrator.task, results, summary_llm)
         results.append(summary_result)
 
-        await self.agent.close()
+        await self.orchestrator.close()
         return results
 
     async def _execute_history_step(
-        self, history_item: AgentHistory, delay: float, ai_step_llm: BaseChatModel | None = None
-    ) -> list[ActionResult]:
+        self, history_item: ExecutionHistory, delay: float, ai_step_llm: BaseChatModel | None = None
+    ) -> list[ExecutionResult]:
         """Execute a single step from history with element validation."""
-        assert self.agent.browser_session is not None, 'BrowserSession is not set up'
+        assert self.orchestrator.browser_session is not None, 'ChromeSession is not set up'
 
         await asyncio.sleep(delay)
-        state = await self.agent.browser_session.get_browser_state_summary(include_screenshot=False)
+        state = await self.orchestrator.browser_session.get_browser_state_summary(include_screenshot=False)
         if not state or not history_item.model_output:
             raise ValueError('Invalid state or model output')
 
@@ -127,7 +127,7 @@ class RerunManager:
             if action_name == 'extract':
                 # Execute any pending actions first to maintain correct order
                 if pending_actions:
-                    batch_results = await self.agent.multi_act(pending_actions)
+                    batch_results = await self.orchestrator.multi_act(pending_actions)
                     results.extend(batch_results)
                     pending_actions = []
 
@@ -157,7 +157,7 @@ class RerunManager:
 
         # Execute any remaining pending actions
         if pending_actions:
-            batch_results = await self.agent.multi_act(pending_actions)
+            batch_results = await self.orchestrator.multi_act(pending_actions)
             results.extend(batch_results)
 
         return results
@@ -165,9 +165,9 @@ class RerunManager:
     async def _update_action_indices(
         self,
         historical_element: DOMInteractedElement | None,
-        action: 'ActionModel',
+        action: 'CommandModel',
         browser_state_summary: BrowserStateSummary,
-    ) -> 'ActionModel | None':
+    ) -> 'CommandModel | None':
         """Update action indices based on current page state."""
         if not historical_element or not browser_state_summary.dom_state.selector_map:
             return action
@@ -197,14 +197,14 @@ class RerunManager:
         include_screenshot: bool = False,
         extract_links: bool = False,
         ai_step_llm: BaseChatModel | None = None,
-    ) -> ActionResult:
+    ) -> ExecutionResult:
         """Execute an AI step during rerun to re-evaluate extract actions."""
         from core.orchestrator.prompts import get_ai_step_system_prompt, get_ai_step_user_prompt, get_rerun_summary_message
         from core.ai_models.messages import SystemMessage, UserMessage
         from core.helpers import sanitize_surrogates
 
         # Use provided LLM or agent's LLM
-        llm = ai_step_llm or self.agent.llm
+        llm = ai_step_llm or self.orchestrator.llm
         self.logger.debug(f'Using LLM for AI step: {llm.model}')
 
         # Extract clean markdown
@@ -212,16 +212,16 @@ class RerunManager:
             from core.dom_processing.markdown_extractor import extract_clean_markdown
 
             content, content_stats = await extract_clean_markdown(
-                browser_session=self.agent.browser_session, extract_links=extract_links
+                browser_session=self.orchestrator.browser_session, extract_links=extract_links
             )
         except Exception as e:
-            return ActionResult(error=f'Could not extract clean markdown: {type(e).__name__}: {e}')
+            return ExecutionResult(error=f'Could not extract clean markdown: {type(e).__name__}: {e}')
 
         # Get screenshot if requested
         screenshot_b64 = None
         if include_screenshot:
             try:
-                screenshot = await self.agent.browser_session.take_screenshot(full_page=False)
+                screenshot = await self.orchestrator.browser_session.take_screenshot(full_page=False)
                 if screenshot:
                     import base64
 
@@ -258,7 +258,7 @@ class RerunManager:
                 llm.ainvoke([SystemMessage(content=system_prompt), user_message]), timeout=120.0
             )
 
-            current_url = await self.agent.browser_session.get_current_page_url()
+            current_url = await self.orchestrator.browser_session.get_current_page_url()
             extracted_content = (
                 f'<url>\n{current_url}\n</url>\n<query>\n{query}\n</query>\n<result>\n{response.completion}\n</result>'
             )
@@ -269,12 +269,12 @@ class RerunManager:
                 memory = extracted_content
                 include_extracted_content_only_once = False
             else:
-                file_name = await self.agent.file_system.save_extracted_content(extracted_content)
+                file_name = await self.orchestrator.file_system.save_extracted_content(extracted_content)
                 memory = f'Query: {query}\nContent in {file_name} and once in <read_state>.'
                 include_extracted_content_only_once = True
 
             self.logger.info(f'🤖 AI Step: {memory}')
-            return ActionResult(
+            return ExecutionResult(
                 extracted_content=extracted_content,
                 include_extracted_content_only_once=include_extracted_content_only_once,
                 long_term_memory=memory,
@@ -282,16 +282,16 @@ class RerunManager:
         except Exception as e:
             self.logger.warning(f'Failed to execute AI step: {e.__class__.__name__}: {e}')
             self.logger.debug('Full error traceback:', exc_info=True)
-            return ActionResult(error=f'AI step failed: {e}')
+            return ExecutionResult(error=f'AI step failed: {e}')
 
     async def _generate_rerun_summary(
-        self, original_task: str, results: list[ActionResult], summary_llm: BaseChatModel | None = None
-    ) -> ActionResult:
+        self, original_task: str, results: list[ExecutionResult], summary_llm: BaseChatModel | None = None
+    ) -> ExecutionResult:
         """Generate AI summary of rerun completion using screenshot and last step info."""
         # Get current screenshot
         screenshot_b64 = None
         try:
-            screenshot = await self.agent.browser_session.take_screenshot(full_page=False)
+            screenshot = await self.orchestrator.browser_session.take_screenshot(full_page=False)
             if screenshot:
                 import base64
 
@@ -316,7 +316,7 @@ class RerunManager:
         try:
             # Determine which LLM to use
             if summary_llm is None:
-                summary_llm = self.agent.llm
+                summary_llm = self.orchestrator.llm
                 self.logger.debug('Using agent LLM for rerun summary')
             else:
                 self.logger.debug(f'Using provided LLM for rerun summary: {summary_llm.model}')
@@ -353,7 +353,7 @@ class RerunManager:
             self.logger.info(f'📊 Rerun Summary: {summary.summary}')
             self.logger.info(f'📊 Status: {summary.completion_status} (success={summary.success})')
 
-            return ActionResult(
+            return ExecutionResult(
                 is_done=True,
                 success=summary.success,
                 extracted_content=summary.summary,
@@ -364,7 +364,7 @@ class RerunManager:
             self.logger.warning(f'Failed to generate AI summary: {e.__class__.__name__}: {e}')
             self.logger.debug('Full error traceback:', exc_info=True)
             # Fallback to simple summary
-            return ActionResult(
+            return ExecutionResult(
                 is_done=True,
                 success=error_count == 0,
                 extracted_content=f'Rerun completed: {success_count}/{len(results)} steps succeeded',
@@ -374,52 +374,52 @@ class RerunManager:
     async def _execute_initial_actions(self) -> None:
         """Execute initial actions if provided."""
         import time
-        from core.orchestrator.models import AgentHistory, StepMetadata
+        from core.orchestrator.models import ExecutionHistory, StepMetadata
 
         # Execute initial actions if provided
-        if self.agent.initial_actions and not self.agent.state.follow_up_task:
-            self.logger.debug(f'⚡ Executing {len(self.agent.initial_actions)} initial actions...')
-            result = await self.agent.multi_act(self.agent.initial_actions)
+        if self.orchestrator.initial_actions and not self.orchestrator.state.follow_up_task:
+            self.logger.debug(f'⚡ Executing {len(self.orchestrator.initial_actions)} initial actions...')
+            result = await self.orchestrator.multi_act(self.orchestrator.initial_actions)
             # update result 1 to mention that its was automatically loaded
-            if result and self.agent.initial_url and result[0].long_term_memory:
+            if result and self.orchestrator.initial_url and result[0].long_term_memory:
                 result[0].long_term_memory = f'Found initial url and automatically loaded it. {result[0].long_term_memory}'
-            self.agent.state.last_result = result
+            self.orchestrator.state.last_result = result
 
             # Save initial actions to history as step 0 for rerun capability
-            if self.agent.settings.flash_mode:
-                model_output = self.agent.AgentOutput(
+            if self.orchestrator.settings.flash_mode:
+                model_output = self.orchestrator.StepDecision(
                     evaluation_previous_goal=None,
                     memory='Initial navigation',
                     next_goal=None,
-                    action=self.agent.initial_actions,
+                    action=self.orchestrator.initial_actions,
                 )
             else:
-                model_output = self.agent.AgentOutput(
+                model_output = self.orchestrator.StepDecision(
                     evaluation_previous_goal='Start',
                     memory=None,
                     next_goal='Initial navigation',
-                    action=self.agent.initial_actions,
+                    action=self.orchestrator.initial_actions,
                 )
 
             metadata = StepMetadata(step_number=0, step_start_time=time.time(), step_end_time=time.time(), step_interval=None)
 
             # Create minimal browser state history for initial actions
             state_history = BrowserStateHistory(
-                url=self.agent.initial_url or '',
+                url=self.orchestrator.initial_url or '',
                 title='Initial Actions',
                 tabs=[],
-                interacted_element=[None] * len(self.agent.initial_actions),
+                interacted_element=[None] * len(self.orchestrator.initial_actions),
                 screenshot_path=None,
             )
 
-            history_item = AgentHistory(
+            history_item = ExecutionHistory(
                 model_output=model_output,
                 result=result,
                 state=state_history,
                 metadata=metadata,
             )
 
-            self.agent.history.add_item(history_item)
+            self.orchestrator.history.add_item(history_item)
             self.logger.debug('📝 Saved initial actions to history as step 0')
             self.logger.debug('Initial actions completed')
 
@@ -428,15 +428,15 @@ class RerunManager:
         history_file: str | Path | None = None,
         variables: dict[str, str] | None = None,
         **kwargs,
-    ) -> list[ActionResult]:
+    ) -> list[ExecutionResult]:
         """Load history from file and rerun it, optionally substituting variables."""
         if not history_file:
-            history_file = 'AgentHistory.json'
-        history = AgentHistoryList.load_from_file(history_file, self.agent.AgentOutput)
+            history_file = 'ExecutionHistory.json'
+        history = ExecutionHistoryList.load_from_file(history_file, self.orchestrator.StepDecision)
 
         # Substitute variables if provided
         if variables:
-            history = self.agent._substitute_variables_in_history(history, variables)
+            history = self.orchestrator._substitute_variables_in_history(history, variables)
 
         return await self.rerun_history(history, **kwargs)
 

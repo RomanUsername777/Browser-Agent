@@ -18,7 +18,7 @@ def _get_timeout(env_var: str, default: float) -> float | None:
 	Safely parse environment variable timeout values with robust error handling.
 
 	Args:
-		env_var: Environment variable name (e.g. 'TIMEOUT_NavigateToUrlEvent')
+		env_var: Environment variable name (e.g. 'TIMEOUT_UrlNavigationRequest')
 		default: Default timeout value as float (e.g. 15.0)
 
 	Returns:
@@ -44,7 +44,7 @@ def _get_timeout(env_var: str, default: float) -> float | None:
 
 
 # ============================================================================
-# События Agent/Tools -> BrowserSession (высокоуровневые действия браузера)
+# События Agent/Tools -> ChromeSession (высокоуровневые действия браузера)
 # ============================================================================
 
 
@@ -85,7 +85,7 @@ class ElementSelectedEvent(BaseEvent[T_EventResultType]):
 
 
 
-class NavigateToUrlEvent(BaseEvent[None]):
+class UrlNavigationRequest(BaseEvent[None]):
 	"""Navigate to a specific URL."""
 
 	url: str
@@ -97,10 +97,10 @@ class NavigateToUrlEvent(BaseEvent[None]):
 	# existing_tab: PageHandle | None = None  # Примечание: требует реализации
 
 	# time limits enforced by bubus, not exposed to LLM:
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_NavigateToUrlEvent', 15.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_UrlNavigationRequest', 15.0))  # seconds
 
 
-class ClickElementEvent(ElementSelectedEvent[dict[str, Any] | None]):
+class ElementClickRequest(ElementSelectedEvent[dict[str, Any] | None]):
 	"""Click an element."""
 
 	node: 'EnhancedDOMTreeNode'
@@ -108,10 +108,10 @@ class ClickElementEvent(ElementSelectedEvent[dict[str, Any] | None]):
 	# click_count: int = 1  # Примечание: требует реализации
 	# expect_download: bool = False  # moved to downloads_watchdog.py
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_ClickElementEvent', 15.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_ElementClickRequest', 15.0))  # seconds
 
 
-class ClickCoordinateEvent(BaseEvent[dict]):
+class CoordinateClickRequest(BaseEvent[dict]):
 	"""Click at specific coordinates."""
 
 	coordinate_x: int
@@ -119,10 +119,10 @@ class ClickCoordinateEvent(BaseEvent[dict]):
 	button: Literal['left', 'right', 'middle'] = 'left'
 	force: bool = False  # If True, skip safety checks (file input, print, select)
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_ClickCoordinateEvent', 15.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_CoordinateClickRequest', 15.0))  # seconds
 
 
-class TypeTextEvent(ElementSelectedEvent[dict | None]):
+class TextInputRequest(ElementSelectedEvent[dict | None]):
 	"""Type text into an element."""
 
 	node: 'EnhancedDOMTreeNode'
@@ -131,17 +131,17 @@ class TypeTextEvent(ElementSelectedEvent[dict | None]):
 	is_sensitive: bool = False  # Flag to indicate if text contains sensitive data
 	sensitive_key_name: str | None = None  # Name of the sensitive key being typed (e.g., 'username', 'password')
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_TypeTextEvent', 60.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_TextInputRequest', 60.0))  # seconds
 
 
-class ScrollEvent(ElementSelectedEvent[None]):
+class PageScrollRequest(ElementSelectedEvent[None]):
 	"""Scroll the page or element."""
 
 	direction: Literal['up', 'down', 'left', 'right']
 	amount: int  # pixels
 	node: 'EnhancedDOMTreeNode | None' = None  # None means scroll page
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_ScrollEvent', 8.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_PageScrollRequest', 8.0))  # seconds
 
 
 class SwitchTabEvent(BaseEvent[TargetID]):
@@ -181,51 +181,51 @@ class BrowserStateRequestEvent(BaseEvent[BrowserStateSummary]):
 
 
 
-class GoBackEvent(BaseEvent[None]):
+class NavigateBackRequest(BaseEvent[None]):
 	"""Navigate back in browser history."""
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_GoBackEvent', 15.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_NavigateBackRequest', 15.0))  # seconds
 
 
-class GoForwardEvent(BaseEvent[None]):
+class NavigateForwardRequest(BaseEvent[None]):
 	"""Navigate forward in browser history."""
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_GoForwardEvent', 15.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_NavigateForwardRequest', 15.0))  # seconds
 
 
-class RefreshEvent(BaseEvent[None]):
+class PageRefreshRequest(BaseEvent[None]):
 	"""Refresh/reload the current page."""
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_RefreshEvent', 15.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_PageRefreshRequest', 15.0))  # seconds
 
 
-class WaitEvent(BaseEvent[None]):
+class DelayRequest(BaseEvent[None]):
 	"""Wait for a specified number of seconds."""
 
 	seconds: float = 3.0
 	max_seconds: float = 10.0  # Safety cap
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_WaitEvent', 60.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_DelayRequest', 60.0))  # seconds
 
 
-class SendKeysEvent(BaseEvent[None]):
+class KeyboardInputRequest(BaseEvent[None]):
 	"""Send keyboard keys/shortcuts."""
 
 	keys: str  # e.g., "ctrl+a", "cmd+c", "Enter"
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_SendKeysEvent', 60.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_KeyboardInputRequest', 60.0))  # seconds
 
 
-class UploadFileEvent(ElementSelectedEvent[None]):
+class FileUploadRequest(ElementSelectedEvent[None]):
 	"""Upload a file to an element."""
 
 	node: 'EnhancedDOMTreeNode'
 	file_path: str
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_UploadFileEvent', 30.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_FileUploadRequest', 30.0))  # seconds
 
 
-class GetDropdownOptionsEvent(ElementSelectedEvent[dict[str, str]]):
+class DropdownOptionsRequest(ElementSelectedEvent[dict[str, str]]):
 	"""Get all options from any dropdown (native <select>, ARIA menus, or custom dropdowns).
 
 	Returns a dict containing dropdown type, options list, and element metadata."""
@@ -233,11 +233,11 @@ class GetDropdownOptionsEvent(ElementSelectedEvent[dict[str, str]]):
 	node: 'EnhancedDOMTreeNode'
 
 	event_timeout: float | None = Field(
-		default_factory=lambda: _get_timeout('TIMEOUT_GetDropdownOptionsEvent', 15.0)
+		default_factory=lambda: _get_timeout('TIMEOUT_DropdownOptionsRequest', 15.0)
 	)  # some dropdowns lazy-load the list of options on first interaction, so we need to wait for them to load (e.g. table filter lists can have thousands of options)
 
 
-class SelectDropdownOptionEvent(ElementSelectedEvent[dict[str, str]]):
+class DropdownSelectRequest(ElementSelectedEvent[dict[str, str]]):
 	"""Select a dropdown option by exact text from any dropdown type.
 
 	Returns a dict containing success status and selection details."""
@@ -245,16 +245,16 @@ class SelectDropdownOptionEvent(ElementSelectedEvent[dict[str, str]]):
 	node: 'EnhancedDOMTreeNode'
 	text: str  # The option text to select
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_SelectDropdownOptionEvent', 8.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_DropdownSelectRequest', 8.0))  # seconds
 
 
-class ScrollToTextEvent(BaseEvent[None]):
+class ScrollToTextRequest(BaseEvent[None]):
 	"""Scroll to specific text on the page. Raises exception if text not found."""
 
 	text: str
 	direction: Literal['up', 'down'] = 'down'
 
-	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_ScrollToTextEvent', 15.0))  # seconds
+	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_ScrollToTextRequest', 15.0))  # seconds
 
 
 # ============================================================================
@@ -472,8 +472,8 @@ class DialogOpenedEvent(BaseEvent):
 
 
 # Примечание: перестройка моделей для forward references обрабатывается в импортирующих модулях
-# События с forward references на 'EnhancedDOMTreeNode' (ClickElementEvent, TypeTextEvent,
-# ScrollEvent, UploadFileEvent) требуют вызова model_rebuild() после завершения импортов
+# События с forward references на 'EnhancedDOMTreeNode' (ElementClickRequest, TextInputRequest,
+# PageScrollRequest, FileUploadRequest) требуют вызова model_rebuild() после завершения импортов
 
 
 def _check_event_names_dont_overlap():
@@ -492,7 +492,7 @@ def _check_event_names_dont_overlap():
 	}
 	# Validate each event name ends with 'Event' and check for substring overlaps
 	for first_event_name in all_event_names:
-		assert first_event_name.endswith('Event'), f'Event with name {first_event_name} does not end with "Event"'
+		assert first_event_name.endswith('Event') or first_event_name.endswith('Request'), f'Event with name {first_event_name} does not end with "Event" or "Request"'
 		for second_event_name in all_event_names:
 			if first_event_name != second_event_name:  # Skip self-comparison
 				assert first_event_name not in second_event_name, (

@@ -2,13 +2,13 @@ from typing import TYPE_CHECKING
 
 # Заглушки типов для ленивых импортов
 if TYPE_CHECKING:
-	from .session import BrowserSession
+	from .session import ChromeSession
 	from .profile import BrowserProfile, ProxySettings
 
 
 # Словарь для ленивой загрузки тяжёлых компонентов браузера
 _LAZY_IMPORTS = {
-	'BrowserSession': ('.session', 'BrowserSession'),
+	'ChromeSession': ('.session', 'ChromeSession'),
 	'BrowserProfile': ('.profile', 'BrowserProfile'),
 	'ProxySettings': ('.profile', 'ProxySettings'),
 }
@@ -36,6 +36,6 @@ def __getattr__(name: str):
 
 __all__ = [
 	'BrowserProfile',
-	'BrowserSession',
+	'ChromeSession',
 	'ProxySettings',
 ]

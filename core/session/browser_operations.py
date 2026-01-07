@@ -1,4 +1,4 @@
-"""Менеджер операций браузера: табы и storage для BrowserSession."""
+"""Менеджер операций браузера: табы и storage для ChromeSession."""
 
 import json
 from pathlib import Path
@@ -11,13 +11,13 @@ from cdp_use.cdp.target.types import TargetInfo
 if TYPE_CHECKING:
 	from core.interaction.page import Page
 	from core.session.models import TabInfo
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 
 class BrowserOperationsManager:
 	"""Менеджер для работы с табами и storage браузера."""
 
-	def __init__(self, browser_session: 'BrowserSession'):
+	def __init__(self, browser_session: 'ChromeSession'):
 		self.browser_session = browser_session
 
 	# ========== Tab Management Methods ==========
@@ -165,9 +165,9 @@ class BrowserOperationsManager:
 
 	async def navigate_to(self, url: str, new_tab: bool = False) -> None:
 		"""Navigate to a URL, optionally in a new tab."""
-		from core.session.events import NavigateToUrlEvent
+		from core.session.events import UrlNavigationRequest
 
-		event = NavigateToUrlEvent(url=url, new_tab=new_tab)
+		event = UrlNavigationRequest(url=url, new_tab=new_tab)
 		await self.browser_session.event_bus.dispatch(event)
 		await event
 

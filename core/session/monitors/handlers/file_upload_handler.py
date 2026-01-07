@@ -5,7 +5,7 @@ import json
 from typing import TYPE_CHECKING
 
 from core.dom_processing.manager import EnhancedDOMTreeNode
-from core.session.events import UploadFileEvent
+from core.session.events import FileUploadRequest
 from core.session.models import BrowserError, URLNotAllowedError
 from core.observability import observe_debug
 
@@ -46,7 +46,7 @@ class FileUploadHandler:
 		cdp_connection = await self.browser_session.get_or_create_cdp_session()
 		return cdp_connection.session_id
 
-	async def on_UploadFileEvent(self, event: UploadFileEvent) -> None:
+	async def on_FileUploadRequest(self, event: FileUploadRequest) -> None:
 		"""Обработать запрос загрузки файла с CDP."""
 		try:
 			# Использовать предоставленный узел

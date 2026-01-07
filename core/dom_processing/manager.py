@@ -26,7 +26,7 @@ from core.observability import observe_debug
 from core.helpers import create_task_with_error_handling
 
 if TYPE_CHECKING:
-	from core.session.session import BrowserSession
+	from core.session.session import ChromeSession
 
 # Примечание: ограничения iframe теперь настраиваются через BrowserProfile.max_iframes и BrowserProfile.max_iframe_depth
 
@@ -66,7 +66,7 @@ class AXNodeBuilder:
 class ViewportCalculator:
 	"""Класс для расчета параметров viewport и device pixel ratio."""
 	
-	def __init__(self, browser_session: 'BrowserSession', logger: logging.Logger | None = None):
+	def __init__(self, browser_session: 'ChromeSession', logger: logging.Logger | None = None):
 		self.browser_session = browser_session
 		self.logger = logger or browser_session.logger
 	
@@ -113,7 +113,7 @@ class DomService:
 
 	def __init__(
 		self,
-		browser_session: 'BrowserSession',
+		browser_session: 'ChromeSession',
 		logger: logging.Logger | None = None,
 		cross_origin_iframes: bool = False,
 		paint_order_filtering: bool = True,

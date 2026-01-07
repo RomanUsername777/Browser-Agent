@@ -507,7 +507,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 		- BrowserType.connect_over_cdp(**BrowserConnectArgs)
 		- BrowserType.launch_persistent_context(**BrowserLaunchPersistentContextArgs)
 		- BrowserContext.new_context(**BrowserNewContextArgs)
-		- BrowserSession(**BrowserProfile)
+		- ChromeSession(**BrowserProfile)
 	"""
 
 	model_config = ConfigDict(
@@ -707,7 +707,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 			# Предупреждаем только если user_data_dir явно указан пользователем (не временный)
 			if not is_temporary_directory:
 				logger.warning(
-					f'⚠️ BrowserSession(...) was passed both storage_state AND user_data_dir. storage_state={self.storage_state} will forcibly overwrite '
+					f'⚠️ ChromeSession(...) was passed both storage_state AND user_data_dir. storage_state={self.storage_state} will forcibly overwrite '
 					f'cookies/localStorage/sessionStorage in user_data_dir={self.user_data_dir}. '
 					f'For multiple browsers in parallel, use only storage_state with user_data_dir=None, '
 					f'or use a separate user_data_dir for each browser and set storage_state=None.'
@@ -741,7 +741,7 @@ class BrowserProfile(BrowserConnectArgs, BrowserLaunchPersistentContextArgs, Bro
 	def warn_deterministic_rendering_weirdness(self) -> Self:
 		if self.deterministic_rendering:
 			logger.warning(
-				'⚠️ BrowserSession(deterministic_rendering=True) is NOT RECOMMENDED. It breaks many sites and increases chances of getting blocked by anti-bot systems. '
+				'⚠️ ChromeSession(deterministic_rendering=True) is NOT RECOMMENDED. It breaks many sites and increases chances of getting blocked by anti-bot systems. '
 				'It hardcodes the JS random seed and forces browsers across Linux/Mac/Windows to use the same font rendering engine so that identical screenshots can be generated.'
 			)
 		return self
