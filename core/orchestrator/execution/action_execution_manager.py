@@ -429,7 +429,7 @@ class ActionExecutionManager:
 
     async def _handle_email_subagent_context(self, action_name: str, action_data: dict) -> None:
         """Handle email subagent context logging (без лишних логов)."""
-        # Метод оставлен для совместимости, но логи убраны для соответствия best-version
+        # Метод оставлен для совместимости, но логи убраны для упрощения вывода
         pass
 
     async def _log_action(self, action, action_name: str, action_num: int, total_actions: int) -> None:

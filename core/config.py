@@ -436,13 +436,13 @@ class Config:
 	def _get_default_agent(self) -> dict[str, Any]:
 		"""Получить конфигурацию агента по умолчанию."""
 		db_config_instance = self._get_db_config()
-		for agent_entry in db_config_instance.core.values():
+		for agent_entry in db_config_instance.agent.values():
 			if agent_entry.default:
 				return agent_entry.model_dump(exclude_none=True)
 
 		# Вернуть первого агента, если нет по умолчанию
 		if db_config_instance.agent:
-			return next(iter(db_config_instance.core.values())).model_dump(exclude_none=True)
+			return next(iter(db_config_instance.agent.values())).model_dump(exclude_none=True)
 
 		return {}
 
